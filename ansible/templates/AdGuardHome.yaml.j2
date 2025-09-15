@@ -97,7 +97,7 @@ filters:
 {% for filter in adguard_filters | default([]) %}
   - enabled: {{ filter.enabled }}
     url: {{ filter.url }}
-    name: {{ filter.name }}
+    name: {{ filter.name | quote }}
     id: {{ filter.id }}
 {% else %}
 []
@@ -107,7 +107,7 @@ whitelist_filters:
 {% for whitelist in adguard_whitelist_filters | default([]) %}
 - enabled: {{ whitelist.enabled }}
   url: {{ whitelist.url }}
-  name: {{ whitelist.name }}
+  name: {{ whitelist.name | quote}}
   id: {{ whitelist.id }}
 {% else %}
 []

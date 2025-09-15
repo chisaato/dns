@@ -137,15 +137,15 @@ servers:
     timeout: 5
     listeners:
       - protocol: udp
-        addr: "{{ mosdns_default_listen }}"
+        addr: ":{{ mosdns_default_listen }}"
       - protocol: tcp
-        addr: "{{ mosdns_default_listen }}"
+        addr: ":{{ mosdns_default_listen }}"
   # 作为 AdGuard 上游的序列
   # 远程服务器直接把 AdGuard 转移到这里就行,上一个就不要了
   - exec: clean_sequence
     timeout: 5
     listeners:
       - protocol: udp
-        addr: "{{ mosdns_clean_listen }}"
+        addr: ":{{ mosdns_clean_listen }}"
       - protocol: tcp
-        addr: "{{ mosdns_clean_listen }}"
+        addr: ":{{ mosdns_clean_listen }}"

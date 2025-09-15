@@ -94,3 +94,9 @@
         src: update.sh.j2
         dest: "{{ playbook_dir }}/../mosdns/update.sh"
         mode: "0755"
+    # 告知
+    - name: 告知配置生成完毕
+      ansible.builtin.debug:
+        msg:
+          - "配置生成完毕"
+          - "自行 docker compose restart 或者 docker compose up -d"

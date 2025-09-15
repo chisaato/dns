@@ -36,8 +36,8 @@ dnsproxy_upstream:
 dnsproxy_port: 1754
 
 # mosdns 配置
-mosdns_default_listen: ":1756"
-mosdns_clean_listen: ":1755"
+mosdns_default_listen: 1756
+mosdns_clean_listen: 1755
 # 海外转发
 mosdns_oversea_upstream:
   - https://1.1.1.1/dns-query
