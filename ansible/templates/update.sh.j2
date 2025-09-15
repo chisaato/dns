@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# 判断MOSDNS_RES变量是否存在，不存在则设定为脚本自身所在的目录
+if [ -z "$MOSDNS_RES" ]; then
+    MOSDNS_RES="$(cd "$(dirname "$0")" && pwd)"
+    echo "MOSDNS_RES变量不存在，已设定为脚本所在目录: $MOSDNS_RES"
+else
+    echo "MOSDNS_RES变量已存在: $MOSDNS_RES"
+fi
+
+{% if mac_address_remote_url != "" %}
+curl -L -o "$MOSDNS_RES/mac-address-remote.txt" {{ mac_address_remote_url }}
+{% endif %}
+curl -L -o "$MOSDNS_RES/geosite.dat" {{ geosite_dat_url }}

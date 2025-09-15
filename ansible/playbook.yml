@@ -1,0 +1,96 @@
+---
+- name: DNS 项目配置生成和部署
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  pre_tasks:
+    - name: 加载默认变量
+      ansible.builtin.include_vars:
+        file: default/default.yml
+      failed_when: false
+    - name: 加载用户覆盖变量
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../vars.yml"
+  tasks:
+    - name: 创建必要目录
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - adguard/data
+        - mosdns
+        - dnsproxy
+
+    - name: 检测 geosite.dat 存在
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../mosdns/geosite.dat"
+      register: geosite_dat_status
+    - name: 检测 hosts 存在
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../mosdns/hosts"
+      register: hosts_status
+    - name: 检测远程 mac 地址列表存在
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../mosdns/mac-address-remote.txt"
+      register: mac_address_remote_status
+    - name: 检测本地 mac 地址列表存在
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../mosdns/mac-address-local.txt"
+      register: mac_address_local_status
+
+    # 对于 hosts 和本地 mac 地址列表,如果不存在则创建空文件
+    - name: 创建空 hosts 文件
+      when: not hosts_status.stat.exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../mosdns/hosts"
+        state: touch
+        mode: "0644"
+    - name: 创建空本地 mac 地址列表文件
+      when: not mac_address_local_status.stat.exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../mosdns/mac-address-local.txt"
+        state: touch
+        mode: "0644"
+    # 对于 geosite.dat 和 远程 mac 地址列表,如果本地不存在则下载
+    - name: 下载 geosite.dat
+      when: not geosite_dat_status.stat.exists
+      ansible.builtin.get_url:
+        url: "{{ geosite_dat_url }}"
+        dest: "{{ playbook_dir }}/../mosdns/geosite.dat"
+        mode: "0644"
+    - name: 创建空远程 mac 地址列表文件
+      when: not mac_address_remote_status.stat.exists and mac_address_remote_url == ""
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../mosdns/mac-address-remote.txt"
+        state: touch
+        mode: "0644"
+
+    - name: 下载远程 mac 地址列表
+      when: not mac_address_remote_status.stat.exists and mac_address_remote_url != ""
+      ansible.builtin.get_url:
+        url: "{{ mac_address_remote_url }}"
+        dest: "{{ playbook_dir }}/../mosdns/mac-address-remote.txt"
+        mode: "0644"
+
+    # 渲染各个配置
+    - name: 渲染 AdGuardHome 配置
+      ansible.builtin.template:
+        src: AdGuardHome.yaml.j2
+        dest: "{{ playbook_dir }}/../adguard/AdGuardHome.yaml"
+        mode: "0644"
+    - name: 渲染 dnsproxy 配置
+      ansible.builtin.template:
+        src: dnsproxy-config.yaml.j2
+        dest: "{{ playbook_dir }}/../dnsproxy/config.yaml"
+        mode: "0644"
+    - name: 渲染 MosDNS 配置
+      ansible.builtin.template:
+        src: mosdns-config.yaml.j2
+        dest: "{{ playbook_dir }}/../mosdns/config.yaml"
+        mode: "0644"
+    - name: 渲染 mosdns 资源更新脚本
+      ansible.builtin.template:
+        src: update.sh.j2
+        dest: "{{ playbook_dir }}/../mosdns/update.sh"
+        mode: "0755"

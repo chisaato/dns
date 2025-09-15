@@ -1,0 +1,61 @@
+services:
+  adguard:
+    restart: always
+    image: adguard/adguardhome:latest
+    network_mode: host
+    command: -w /etc/adguard -c /etc/adguard/AdGuardHome.yaml
+    volumes:
+      - ./adguard:/etc/adguard
+
+  mosdns:
+    restart: always
+    image: ghcr.io/chisaato/mosdns-x:latest
+    network_mode: host
+    depends_on:
+      - dnsproxy
+    environment:
+      - MOSDNS_RES=/etc/mosdns
+    entrypoint:
+      - /root/mosdns
+    command:
+      - start
+      - -c
+      - /etc/mosdns/config.yaml
+    volumes:
+      - ./mosdns:/etc/mosdns
+    labels:
+      ofelia.enabled: true
+      ofelia.job-exec.update-mosdns-res.schedule: "@daily"
+      ofelia.job-exec.update-mosdns-res.command: /bin/sh /etc/mosdns/update.sh
+
+  # DNSProxy - 为 MosDNS 提供多协议 bootstrap
+  dnsproxy:
+    tty: true
+    image: adguard/dnsproxy:latest
+    network_mode: host
+    volumes:
+      - ./dnsproxy/config.yaml:/opt/dnsproxy/config.yaml:ro # 只读配置
+
+  # Ofelia - 调度器，运行更新任务
+  ofelia:
+    image: mcuadros/ofelia:latest
+    depends_on:
+      - mosdns
+    command: daemon --docker -f label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Ansible - 初始化任务，仅在 init profile 运行
+  ansible-init:
+    profiles:
+      - init
+    image: alpine/ansible:latest
+    restart: "no"
+    tty: true
+    stdin_open: true
+    network_mode: host
+    volumes:
+      # - ./ansible:/ansible:ro
+      - ./:/workdir
+    working_dir: /workdir
+    command: ansible-playbook /workdir/ansible/playbook.yml

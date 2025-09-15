@@ -1,0 +1,17 @@
+bootstrap:
+{% for dns in bootstrap_dns %}
+  - "{{ dns }}"
+{% endfor %}
+listen-addrs:
+  - "127.0.0.1"
+listen-ports:
+  - {{ dnsproxy_port }}
+max-go-routines: 0
+ratelimit: 0
+udp-buf-size: 0
+upstream:
+{% for dns in dnsproxy_upstream %}
+  - "{{ dns }}"
+{% endfor %}
+timeout: "10s"
+verbose: true

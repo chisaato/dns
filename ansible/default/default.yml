@@ -1,0 +1,60 @@
+---
+# Bootstrap DNS 服务器列表（dnsproxy 和 adguard 共享）
+bootstrap_dns:
+  - https://1.12.12.12/dns-query
+  - https://120.53.53.53/dns-query
+
+# AdGuard Home 配置
+adguard_username: "admin"
+adguard_password: "admin"
+adguard_dns_port: 1753
+adguard_web_port: 3005
+# AdGuard 主上游
+adguard_upstream_dns:
+  # 默认情况下你用本地 mosdns 作为上游就对了
+  - 127.0.0.1:{{ mosdns_clean_listen }}
+# 一般来说你可以不写这个
+adguard_fallback_dns: []
+# 过滤器
+adguard_filters:
+  - enabled: true
+    url: https://github.com/AdguardTeam/AdGuardSDNSFilter/refs/heads/master/Filters/rules.txt
+    name: AdGuard DNS filter
+    id: 1
+# 白名单
+adguard_whitelist_filters: []
+
+# dnsproxy 配置
+dnsproxy_upstream:
+  # 腾讯
+  - https://doh.pub/dns-query
+  - https://1.12.12.12/dns-query
+  - https://120.53.53.53/dns-query
+  # 阿里
+  - https://223.5.5.5/dns-query
+  - https://dns.alidns.com/dns-query
+dnsproxy_port: 1754
+
+# mosdns 配置
+mosdns_default_listen: ":1756"
+mosdns_clean_listen: ":1755"
+# 海外转发
+mosdns_oversea_upstream:
+  - https://1.1.1.1/dns-query
+# 国内洁净转发,一般是自建的
+mosdns_cn_clean_upstream:
+  - https://doh.pub/dns-query
+# 国内加密/公共 DNS 转发,不一定纯净
+mosdns_cn_normal_upstream:
+  # 腾讯
+  - https://doh.pub/dns-query
+  - https://1.12.12.12/dns-query
+  - https://120.53.53.53/dns-query
+  # 阿里
+  - https://223.5.5.5/dns-query
+  - https://dns.alidns.com/dns-query
+mosdns_cache_size: 5242880
+
+# 文件下载源
+geosite_dat_url: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
+mac_address_remote_url: ""

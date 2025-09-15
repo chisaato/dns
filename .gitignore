@@ -1,0 +1,19 @@
+# 数据目录（忽略所有运行时数据）
+
+/adguard
+/dnsproxy
+/mosdns
+# 数据库和日志文件
+*.db
+*.json.*
+*.log
+
+# Ansible 生成的临时文件
+ansible/*.retry
+*.vault
+
+# VSCode 配置
+.vscode/settings.json
+
+# Ansible 变量
+vars.yml
