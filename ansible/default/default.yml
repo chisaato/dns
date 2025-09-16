@@ -14,7 +14,8 @@ adguard_upstream_dns:
   # 默认情况下你用本地 mosdns 作为上游就对了
   - 127.0.0.1:{{ mosdns_clean_listen }}
 # 一般来说你可以不写这个
-adguard_fallback_dns: []
+adguard_fallback_dns:
+  - 127.0.0.1:{{ mosdns_clean_listen }}
 # 过滤器
 adguard_filters:
   - enabled: true

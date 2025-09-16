@@ -94,23 +94,23 @@ statistics:
   interval: 2160h
   enabled: true
 filters:
-{% for filter in adguard_filters | default([]) %}
+{% if adguard_filters | length == 0 %}[]
+{% endif %}
+{% for filter in adguard_filters %}
   - enabled: {{ filter.enabled }}
     url: {{ filter.url }}
     name: {{ filter.name | quote }}
     id: {{ filter.id }}
-{% else %}
-[]
 {% endfor %}
 
 whitelist_filters:
-{% for whitelist in adguard_whitelist_filters | default([]) %}
+{% if adguard_whitelist_filters | length == 0 %}[]
+{% endif %}
+{% for whitelist in adguard_whitelist_filters %}
 - enabled: {{ whitelist.enabled }}
   url: {{ whitelist.url }}
   name: {{ whitelist.name | quote}}
   id: {{ whitelist.id }}
-{% else %}
-[]
 {% endfor %}
 user_rules: []
 dhcp:
