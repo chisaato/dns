@@ -17,3 +17,4 @@ ansible/*.retry
 
 # Ansible 变量
 vars.yml
+.ansible
