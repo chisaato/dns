@@ -44,8 +44,10 @@ services:
       - auto-update
     depends_on:
       - mosdns
+    restart: always
     command: daemon --docker -f label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}
     volumes:
+      # - /var/run/podman/podman.sock:/var/run/docker.sock:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
   # Ansible - 初始化任务，仅在 init profile 运行
