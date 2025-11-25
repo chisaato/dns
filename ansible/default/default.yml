@@ -59,4 +59,12 @@ mosdns_cache_size: 5242880
 # 文件下载源
 geosite_dat_url: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
 mac_address_remote_url: ""
+# mosdns_custom_forwarding:
+#   - name: "example"
+#     domains:
+#       - "example.com"
+#       - "provider:geosite:example"
+#     upstream:
+#       - "https://1.1.1.1/dns-query"
+#     block_type_https: true
 mosdns_custom_forwarding: {}
