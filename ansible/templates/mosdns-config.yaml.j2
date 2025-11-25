@@ -48,7 +48,12 @@ plugins:
       lazy_cache_ttl: 60
       lazy_cache_reply_ttl: 5
       cache_everything: true
-
+  # 匹配 HTTPS 类型
+  - tag: "match_type_https"
+    type: "query_matcher"
+    args:
+      qtype:
+        - 65
   # 匹配要进行纯净 DNS 的 mac 地址列表
   - tag: "match_clean_macs"
     type: "query_matcher"
@@ -134,8 +139,17 @@ plugins:
         # 匹配并执行自定义转发 {{ item.name }}
         - if: "match_custom_{{ item.name }}"
           exec:
+            # 在这里实现对自定义转发的 HTTPS 请求进行拦截
+{% if item.block_type_https | default(false) %}
+            - if: "match_type_https"
+              exec:
+                - _new_empty_response
+                - "_return"
+{% endif %}
             - forward_custom_{{ item.name }}
-            - _return
+            - if: "[_response_valid_answer]"
+              exec:
+                - "_return"
 {% endfor %}
 {% endif %}
         # 如果没有 edns0 当作本机请求,此时走净化模式
