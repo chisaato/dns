@@ -18,6 +18,20 @@ data_providers:
   - tag: geosite
     file: /etc/mosdns/geosite.dat
     auto_reload: true
+
+{% if mosdns_custom_forwarding is defined %}
+{% for item in mosdns_custom_forwarding %}
+{% for domain in item.domains %}
+{% if domain.startswith('provider:') %}
+{% set provider_tag = domain.split(':')[1] %}
+  # 自定义转发匹配域名: {{ item.name }}
+  - tag: {{ provider_tag }}
+    file: /etc/mosdns/{{ provider_tag | replace('_', '-') }}.txt
+    auto_reload: true
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
 plugins:
   # hosts 插件,至少准备一个
   - tag: "hosts"
@@ -88,11 +102,42 @@ plugins:
         - addr: udp://127.0.0.1:{{ adguard_dns_port }}
         - addr: tcp://127.0.0.1:{{ adguard_dns_port }}
 
+{% if mosdns_custom_forwarding is defined %}
+{% for item in mosdns_custom_forwarding %}
+  # 匹配自定义转发: {{ item.name }}
+  - tag: "match_custom_{{ item.name }}"
+    type: "query_matcher"
+    args:
+      domain:
+{% for domain in item.domains %}
+        - "{{ domain }}"
+{% endfor %}
+
+  # 执行自定义转发: {{ item.name }}
+  - tag: "forward_custom_{{ item.name }}"
+    type: "fast_forward"
+    args:
+      upstream:
+{% for up in item.upstream %}
+        - addr: "{{ up }}"
+{% endfor %}
+{% endfor %}
+{% endif %}
+
   - tag: default_sequence
     type: sequence
     args:
       exec:
         - hosts
+{% if mosdns_custom_forwarding is defined %}
+{% for item in mosdns_custom_forwarding %}
+        # 匹配并执行自定义转发 {{ item.name }}
+        - if: "match_custom_{{ item.name }}"
+          exec:
+            - forward_custom_{{ item.name }}
+            - _return
+{% endfor %}
+{% endif %}
         # 如果没有 edns0 当作本机请求,此时走净化模式
         # 必须携带 ECS 且 ECS 中含有 mac 地址才走国内服务器
         - if: "([_query_edns0] && !match_clean_macs)"
