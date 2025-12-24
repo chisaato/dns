@@ -42,6 +42,8 @@ dns:
   cache_ttl_min: 0
   cache_ttl_max: 0
   cache_optimistic: true
+  cache_optimistic_answer_ttl: 30s
+  cache_optimistic_max_age: 12h
   bogus_nxdomain: []
   aaaa_disabled: false
   enable_dnssec: true
@@ -160,6 +162,7 @@ filtering:
   filters_update_interval: 1
   blocked_response_ttl: 10
   filtering_enabled: true
+  rewrites_enabled: true
   parental_enabled: false
   safebrowsing_enabled: false
   protection_enabled: true
@@ -184,4 +187,4 @@ os:
   group: ""
   user: ""
   rlimit_nofile: 0
-schema_version: 30
+schema_version: 32
