@@ -167,8 +167,8 @@ plugins:
     type: sequence
     args:
       exec:
-        # 之前走过了,这里不走
-        # - hosts
+        # 走一次,反正开销不大
+        - hosts
         - "cache"
         - primary:
             - "forward_cn_clean"
