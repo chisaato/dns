@@ -89,12 +89,22 @@ plugins:
           bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
 {% endfor %}
 
-  # 国内洁净转发
-  - tag: forward_cn_clean
+  # 自建洁净转发
+  - tag: forward_self_clean
     type: fast_forward
     args:
       upstream:
-{% for upstream_url in mosdns_cn_clean_upstream %}
+{% for upstream_url in mosdns_self_clean_upstream %}
+        - addr: {{ upstream_url | to_yaml }}
+          bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
+{% endfor %}
+
+  # 自建非过滤转发
+  - tag: forward_self_no_filter
+    type: fast_forward
+    args:
+      upstream:
+{% for upstream_url in mosdns_self_no_filter_upstream %}
         - addr: {{ upstream_url | to_yaml }}
           bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
 {% endfor %}
@@ -128,7 +138,26 @@ plugins:
 {% endfor %}
 {% endfor %}
 {% endif %}
+  # 带失败回滚的国内非净化转发
+  - tag: forward_no_filter
+    type: sequence
+    args:
+      exec:
+        - primary:
+            # 优先请求自建
+            - "forward_self_no_filter"
+          secondary:
+            # 如果自建爆了,则自己去请求国内公共加密 DNS
+            - "forward_cn_normal"
+            - _return
+          # 统计最近 10 次请求,失败超过 5 次则切换为自主请求 DoH
+          stat_length: 10
+          threshold: 5
+          # 或者 1000 ms 后没有结果
+          fast_fallback: 1000
+          always_standby: false
 
+  # 默认序列,流量就应该扔进这里
   - tag: default_sequence
     type: sequence
     args:
@@ -156,9 +185,9 @@ plugins:
         # 必须携带 ECS 且 ECS 中含有 mac 地址才走国内服务器
         - if: "([_query_edns0] && !match_clean_macs)"
           exec:
-            # 无须净化的 mac 地址列表,直接去查询国内服务器
+            # 这里无须净化,直接去查询国内服务器
             - "cache"
-            - "forward_cn_normal"
+            - "forward_no_filter"
             - _return
         # 直接发往本地 AdGuard
         - forward_adguard
@@ -171,16 +200,17 @@ plugins:
         - hosts
         - "cache"
         - primary:
-            - "forward_cn_clean"
-          # 如果国内的主服务器爆了,则自己请求那几个 DoH
+            # 作为 AdGuard 上游肯定是考虑先走自建
+            - "forward_self_clean"
           secondary:
-            # 匹配国内域名
+            # 如果国内的主服务器爆了则在这里实现一套简单的洁净分流
             - if: (match_cn_domains)
               exec:
                 - "cache"
+                # 这里没有考虑自建的必要,因为假设自建已经爆了
                 - "forward_cn_normal"
                 - _return
-            # 剩下的照常请求出去
+            # 剩下的就是请求海外了
             - "cache"
             - "forward_oversea"
             - _return
@@ -192,6 +222,7 @@ plugins:
           always_standby: false
 servers:
   # 默认序列
+  # 请把下游设定到这个端口来
   - exec: default_sequence
     timeout: 5
     listeners:
