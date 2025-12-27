@@ -42,8 +42,11 @@ mosdns_clean_listen: 1755
 # 海外转发
 mosdns_oversea_upstream:
   - https://1.1.1.1/dns-query
-# 国内洁净转发,一般是自建的
-mosdns_cn_clean_upstream:
+# 自建洁净转发
+mosdns_self_clean_upstream:
+  - https://doh.pub/dns-query
+# 自建非过滤转发
+mosdns_self_no_filter_upstream:
   - https://doh.pub/dns-query
 # 国内加密/公共 DNS 转发,不一定纯净
 mosdns_cn_normal_upstream:
