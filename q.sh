@@ -1,2 +1,2 @@
 #!/bin/bash
-docker run --rm -it ghcr.io/natesales/q "${@}"
+docker run --rm -it --network host ghcr.io/natesales/q "${@}"
