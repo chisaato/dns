@@ -8,7 +8,64 @@ else
     echo "MOSDNS_RES变量已存在: $MOSDNS_RES"
 fi
 
+# 下载并验证函数
+# $1: URL
+# $2: 目标路径
+# $3: 最小文件大小 (bytes, 默认为 1024)
+download_file() {
+    local url="$1"
+    local target="$2"
+    local min_size="${3:-1024}"
+    local tmp_file="${target}.tmp"
+    local max_retries=5
+    local success=0
+
+    echo "正在尝试下载: $url"
+
+    for i in $(seq 1 $max_retries); do
+        # -L: 跟踪重定向
+        # -f: HTTP 错误时失败 (不返回错误页面的 HTML)
+        # -sS: 静默模式，但显示错误
+        # --connect-timeout: 连接超时 15s
+        # --retry: curl 内部重试 2 次
+        if curl -L -f -sS --connect-timeout 15 --retry 2 -o "$tmp_file" "$url"; then
+            if [ -f "$tmp_file" ]; then
+                local actual_size=$(stat -c%s "$tmp_file" 2>/dev/null || stat -f%z "$tmp_file" 2>/dev/null)
+                if [ "$actual_size" -ge "$min_size" ]; then
+                    mv "$tmp_file" "$target"
+                    echo "成功下载并更新: $target ($actual_size 字节)"
+                    success=1
+                    break
+                else
+                    echo "警告: 下载的文件大小不足 ($actual_size < $min_size 字节)，文件可能已损坏或仓库正在更新。"
+                fi
+            fi
+        else
+            echo "错误: 第 $i 次尝试下载失败 (curl exit code: $?)"
+        fi
+        
+        # 失败处理
+        [ -f "$tmp_file" ] && rm -f "$tmp_file"
+        
+        if [ $i -lt $max_retries ]; then
+            local delay=5
+            echo "将在 ${delay}秒 后进行第 $((i+1)) 次重试..."
+            sleep $delay
+        fi
+    done
+
+    if [ $success -ne 1 ]; then
+        echo "严重错误: 无法下载 $url，已达到最大重试次数 ($max_retries)。"
+        echo "将保持旧文件 $target 不动。"
+        return 1
+    fi
+    return 0
+}
+
 {% if mac_address_remote_url != "" %}
-curl -L -o "$MOSDNS_RES/mac-address-remote.txt" {{ mac_address_remote_url }}
+# 下载 mac-address-remote.txt (预期最小 100 字节)
+download_file "{{ mac_address_remote_url }}" "$MOSDNS_RES/mac-address-remote.txt" 100
 {% endif %}
-curl -L -o "$MOSDNS_RES/geosite.dat" {{ geosite_dat_url }}
+
+# 下载 geosite.dat (预期最小 1MB)
+download_file "{{ geosite_dat_url }}" "$MOSDNS_RES/geosite.dat" 1048576
