@@ -153,8 +153,9 @@ function setNumWorkers(num) end
 ---@return integer
 function getNumWorkers() end
 
----@param params PacketCacheParams
-function newPacketCache(params) end
+---@param maxEntries int
+---@param params     PacketCacheParams
+function newPacketCache(maxEntries, params) end
 
 ---@param pool  string
 ---@param cache PacketCache

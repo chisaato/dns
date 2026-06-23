@@ -34,7 +34,7 @@ setACL({ {% for acl in dnsdist_acl %}'{{ acl }}'{% if not loop.last %}, {% endif
 -- 共享缓存（降低 TLS 链路延迟影响）
 -- =============================================================================
 
-pc = newPacketCache(100000, { maxTTL = 86400, maxNegativeTTL = 60, staleTTL = 60 })
+pc = newPacketCache(10000, { maxTTL = 86400, maxNegativeTTL = 60, staleTTL = 60 })
 
 {% if dnsdist_persistent_cache_enabled | default(true) %}
 -- 持久化缓存：重启后自动加载，避免冷启动延迟
@@ -162,12 +162,16 @@ addAction(AllRule(), logPoolHit('规则: 兜底', 'cn_doh'))
 -- ────────── 响应日志（结构化 JSON + 慢查询告警） ──────────
 
 addResponseAction(AllRule(), LuaResponseAction(function(dr)
-  local qname = dr.qname:toString():gsub('%.$', '')
+  local ok_q, qname_full = pcall(function() return dr.qname:toString() end)
+  if not ok_q then return DNSResponseAction.None end
+  local qname = qname_full:gsub('%.$', '')
   if qname == '' then return DNSResponseAction.None end
 
-  local elapsed = dr:getElapsedUs()
-  local elapsed_ms = elapsed / 1000
-  local is_slow = elapsed > 500000
+  -- 本地 NXDOMAIN/阻断响应无后端参与，getElapsedUs() 可能抛异常
+  local ok_e, elapsed = pcall(function() return dr:getElapsedUs() end)
+  local elapsed_us = ok_e and elapsed or 0
+  local elapsed_ms = elapsed_us / 1000
+  local is_slow = elapsed_us > 500000
 
   -- 获取后端信息（缓存命中或本地阻断时为 nil）
   local backend = nil
@@ -180,6 +184,9 @@ addResponseAction(AllRule(), LuaResponseAction(function(dr)
       if ok2 and v then backend = tostring(v) end
     end
   end
+
+  -- getProtocol() 对本地生成的阻断响应可能不可用
+  local ok_p, proto_str = pcall(function() return dr:getProtocol() end)
 
   logJson('resp', {
     {'qname', qname},
@@ -194,7 +201,7 @@ addResponseAction(AllRule(), LuaResponseAction(function(dr)
     {'pool', dr:getTag('pool_selected')},
     {'backend', backend},
     {'port', tonumber(dr.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
-    {'proto', dr:getProtocol()},
+    {'proto', ok_p and proto_str or 'unknown'},
   }, is_slow and 'warn' or 'info')
   return DNSResponseAction.None
 end))

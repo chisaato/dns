@@ -319,7 +319,12 @@ function logSpoofHit(msg)
       {'port', tonumber(dq.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
       {'proto', dq:getProtocol()},
     })
-    return DNSAction.Spoof
+    -- DNSAction.Spoof 需要第二个参数指定伪造 IP，按查询类型返回对应的 zero-IP
+    if dq.qtype == 28 then
+      return DNSAction.Spoof, '::'
+    else
+      return DNSAction.Spoof, '0.0.0.0'
+    end
   end)
 end
 
