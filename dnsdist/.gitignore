@@ -6,3 +6,4 @@ lists/*.txt
 lists/*.json
 lists/*.log
 cache
+dnsdist.keylog
