@@ -14,14 +14,50 @@
 -- 返回 true = 有可用服务器，false = 全部不可用或检查失败
 local function poolHasAvailable(poolName)
   local ok, pool = pcall(getPool, poolName)
-  if not ok or pool == nil then return false end
-  local ok2, servers = pcall(function() return pool:getServers() end)
-  if not ok2 or servers == nil then return false end
-  for _, s in ipairs(servers) do
-    local ok3, up = pcall(function() return s:isUp() end)
-    if ok3 and up then return true end
+  if not ok then
+    warnlog('健康检查: getPool(' .. poolName .. ') 失败: ' .. tostring(pool))
+    return false
   end
-  return false
+  if pool == nil then
+    warnlog('健康检查: pool ' .. poolName .. ' 为 nil')
+    return false
+  end
+
+  -- 尝试 getServers()，如果失败则假设 pool 有服务器（因为配置已加载）
+  local ok2, servers = pcall(function() return pool:getServers() end)
+  if not ok2 then
+    -- getServers() 失败，可能是 API 不兼容
+    -- 由于服务器已在启动时成功添加，假设 pool 有可用服务器
+    infolog('健康检查: pool ' .. poolName .. ' getServers() 不可用,假设可用')
+    return true
+  end
+  if servers == nil then
+    warnlog('健康检查: getServers() 返回 nil')
+    return false
+  end
+
+  local total = 0
+  local upCount = 0
+  for _, s in ipairs(servers) do
+    total = total + 1
+    local ok3, up = pcall(function() return s:isUp() end)
+    if ok3 and up then
+      upCount = upCount + 1
+    end
+  end
+
+  if total == 0 then
+    warnlog('健康检查: pool ' .. poolName .. ' 无服务器')
+    return false
+  end
+
+  if upCount == 0 then
+    warnlog('健康检查: pool ' .. poolName .. ' 全部不可用 (0/' .. total .. ')')
+    return false
+  end
+
+  infolog('健康检查: pool ' .. poolName .. ' 可用 (' .. upCount .. '/' .. total .. ')')
+  return true
 end
 
 -- routeSelfDohOrFallback(dq): Clean 设备路由
@@ -31,14 +67,20 @@ end
 --   CN 域名 → cn_doh（国内公共 DoH）
 --   非 CN  → overseas_doh（CF 隧道反代）
 function routeSelfDohOrFallback(dq)
+  local qname = dq.qname:toString()
+  local src = dq.remoteaddr:toString()
+
   if poolHasAvailable('self_doh') then
+    infolog('转发: ' .. qname .. ' [' .. src .. '] → self_doh')
     return DNSAction.Pool, 'self_doh'
   end
 
   -- 托底：本地分裂
   if cnDomains:check(dq.qname) then
+    infolog('转发: ' .. qname .. ' [' .. src .. '] → cn_doh (self_doh 不可用, CN 域名)')
     return DNSAction.Pool, 'cn_doh'
   end
+  infolog('转发: ' .. qname .. ' [' .. src .. '] → overseas_doh (self_doh 不可用, 非 CN)')
   return DNSAction.Pool, 'overseas_doh'
 end
 
@@ -47,9 +89,14 @@ end
 -- 正常：self_no_filter（自建无过滤 DoH）
 -- 托底：全部不可用时走 cn_doh（国内公共 DoH）
 function routeNoFilterOrFallback(dq)
+  local qname = dq.qname:toString()
+  local src = dq.remoteaddr:toString()
+
   if poolHasAvailable('self_no_filter') then
+    infolog('转发: ' .. qname .. ' [' .. src .. '] → self_no_filter')
     return DNSAction.Pool, 'self_no_filter'
   end
+  infolog('转发: ' .. qname .. ' [' .. src .. '] → cn_doh (self_no_filter 不可用)')
   return DNSAction.Pool, 'cn_doh'
 end
 

@@ -96,16 +96,29 @@ function addUpstream(url, pool, name)
 
   -- ── 加密协议：解析域名（双栈全量）→ 每个 IP 建一条服务器 ──
   if proto == 'https' or proto == 'h3' or proto == 'quic' or proto == 'tls' then
+    -- QUIC 出方向暂不支持（dnsdist 2.1.x），静默跳过
+    if proto == 'quic' then
+      infolog("addUpstream: 跳过 quic://" .. host .. " — 当前版本不支持 DoQ 出方向")
+      return
+    end
+
     local ips
     if host:match('^%d+%.%d+%.%d+%.%d+$') or host:match(':') then
       -- host 已是纯 IP，跳过 DoH bootstrap
       ips = { host }
+      infolog("addUpstream: " .. host .. " 已是 IP,跳过解析")
     else
+      infolog("addUpstream: 正在解析 " .. host .. " ...")
       ips = resolveViaDoH(host, BS)
     end
     if ips == nil or #ips == 0 then
-      errlog("addUpstream: 无法解析 '" .. host .. "'")
+      errlog("addUpstream: 解析失败 '" .. host .. "' — 无返回 IP")
       return
+    end
+
+    infolog("addUpstream: " .. host .. " 解析到 " .. #ips .. " 个 IP:")
+    for i, ip in ipairs(ips) do
+      infolog("  [" .. i .. "] " .. ip)
     end
 
     for idx, ip in ipairs(ips) do
@@ -116,7 +129,11 @@ function addUpstream(url, pool, name)
         tls = 'openssl',
         subjectName = host,
         pool = pool,
-        checkInterval = 30
+        checkInterval = 30,
+        checkName = '.',
+        checkType = 1,
+        rise = 2,
+        fall = 3,
       }
 
       if proto == 'https' or proto == 'h3' then
@@ -124,8 +141,6 @@ function addUpstream(url, pool, name)
         if proto == 'h3' then
           params.dohProtocol = 'h3'
         end
-      elseif proto == 'quic' then
-        params.protocol = 'DoQ'
       end
       -- tls: 无需额外参数
 

@@ -168,15 +168,43 @@ function observeMacOption65001(dq)
 end
 
 -- =============================================================================
--- Phase 2 — 设备类型判断（配合 LuaRule 在 dnsdist.conf 中使用）
+-- 规则命中日志包装
 -- =============================================================================
--- isClean / isNoFilter 通过 dq:getTag('mac') 读取 observeMacOption65001 设置
--- 的 tag，然后查 g_clean_macs 判断设备类型。
---
--- MAC tag 取值含义：
---   空串 / nil    → 1753 端口（observe 跳过）→ isClean=false, isNoFilter=true
---   'default-clean' → 1853 无 EDNS 65001   → isClean=true,  isNoFilter=false
---   12 字符 hex   → 携带 EDNS 65001        → 查 g_clean_macs
+
+-- logPoolHit(msg, pool): 记录日志并转发到指定 pool
+function logPoolHit(msg, pool)
+  return LuaAction(function(dq)
+    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    return DNSAction.Pool, pool
+  end)
+end
+
+-- logRcodeHit(msg, rcode): 记录日志并返回指定 rcode
+function logRcodeHit(msg, rcode)
+  return LuaAction(function(dq)
+    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    return DNSAction.NXDOMAIN
+  end)
+end
+
+-- logSpoofHit(msg): 记录日志并返回 zero-IP
+function logSpoofHit(msg)
+  return LuaAction(function(dq)
+    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    return DNSAction.Spoof
+  end)
+end
+
+-- logRouteHit(msg, routeFunc): 记录日志并执行路由函数
+function logRouteHit(msg, routeFunc)
+  return LuaAction(function(dq)
+    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    return routeFunc(dq)
+  end)
+end
+
+-- =============================================================================
+-- MAC 设备分类
 -- =============================================================================
 
 -- isClean(dq): 是否需过滤设备（走 blocklist → self_doh）
