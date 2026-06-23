@@ -36,6 +36,14 @@ setACL({ {% for acl in dnsdist_acl %}'{{ acl }}'{% if not loop.last %}, {% endif
 
 pc = newPacketCache(100000, { maxTTL = 86400, maxNegativeTTL = 60, staleTTL = 60 })
 
+{% if dnsdist_persistent_cache_enabled | default(true) %}
+-- 持久化缓存：重启后自动加载，避免冷启动延迟
+setPersistentCacheConfig({
+    directory = '{{ dnsdist_persistent_cache_dir | default("/etc/dnsdist/cache") }}',
+    saveInterval = {{ dnsdist_persistent_cache_save_interval | default(300) }},
+})
+{% endif %}
+
 -- =============================================================================
 -- 加载 addUpstream() — 在此之后才能使用 URL 协议驱动创建服务器
 -- =============================================================================
@@ -89,17 +97,17 @@ dofile('/etc/dnsdist/lua/routing.lua')
 loadDevices()
 
 -- 加载阻断列表
-local blockNxdomain = loadDomainList('/etc/dnsdist/generated/block-nxdomain.txt')
+local blockNxdomain = loadDomainList('/etc/dnsdist/lists/block-nxdomain.txt')
 if blockNxdomain == nil then blockNxdomain = newSuffixMatchNode() end
 
-local blockZeroIp = loadDomainList('/etc/dnsdist/generated/block-zero-ip.txt')
+local blockZeroIp = loadDomainList('/etc/dnsdist/lists/block-zero-ip.txt')
 if blockZeroIp == nil then blockZeroIp = newSuffixMatchNode() end
 
-local allowlistNode = loadDomainList('/etc/dnsdist/generated/allowlist.txt')
+local allowlistNode = loadDomainList('/etc/dnsdist/lists/allowlist.txt')
 if allowlistNode == nil then allowlistNode = newSuffixMatchNode() end
 
--- 加载 CN 域名列表（用于托底分裂路由）
-local cnDomains = loadDomainList('/etc/dnsdist/lists/cn.txt')
+-- 加载 CN 域名列表（用于托底分裂路由，全局供 routing.lua 使用）
+cnDomains = loadDomainList('/etc/dnsdist/lists/cn.txt')
 if cnDomains == nil then cnDomains = newSuffixMatchNode() end
 
 -- =============================================================================
@@ -112,31 +120,81 @@ build_hijack('{{ fwd.name }}', { {% for u in fwd.upstream %}'{{ u }}'{% if not l
 
 -- =============================================================================
 -- 规则链（first-match wins）
+--
+-- 1853: MAC 感知分流（blocklist + allowlist + 设备分类）
+--       携带 EDNS 65001 → 查 mac-clean.txt 判断 Clean/非 Clean
+--       未携带 EDNS 65001 → 默认 Clean，走过滤
+-- 1753: 纯转发（不拦截，直通 cn_doh）
+--
+-- MAC tag 由 observeMacOption65001 在第一条设置：
+--   1853 + 有 EDNS  → hex MAC
+--   1853 + 无 EDNS  → 'default-clean'
+--   1753            → 未设置（空串）
 -- =============================================================================
 
--- ── 1. MAC 观测（必须第一条，仅 1853 端口） ──
-addAction(AllRule(), LuaAction(observeMacOption65001), {["local"] = '{{ dnsdist_listen }}'})
+-- ── R1 [1853] MAC 观测 + 剥离 EDNS 65001（必须第一条） ──
+addAction(AllRule(), LuaAction(observeMacOption65001))
 
--- ────────── Clean MAC 设备（需过滤） ──────────
+-- ────────── [1853] Clean 设备（需过滤） ──────────
 
--- 3. Allowlist 优先：白名单豁免 blocklist，直达 self_doh
-addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(allowlistNode)}, PoolAction('self_doh'))
+-- R2 Allowlist 豁免 → self_doh
+addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(allowlistNode)}, logPoolHit('规则: allowlist 豁免', 'self_doh'))
 
--- 4. Blocklist — NXDOMAIN
-addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(blockNxdomain)}, RCodeAction(3))
+-- R3 Blocklist — NXDOMAIN
+addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(blockNxdomain)}, logRcodeHit('规则: blocklist NXDOMAIN', 3))
 
--- 5. Blocklist — Zero-IP（SNI 阻断）
-addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(blockZeroIp)}, SpoofAction({'0.0.0.0', '::'}))
+-- R4 Blocklist — Zero-IP（SNI 阻断）
+addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(blockZeroIp)}, logSpoofHit('规则: blocklist zero-IP'))
 
--- 6. Clean 设备其余流量 → self_doh（带健康检查托底）
-addAction(LuaRule(isClean), LuaAction(routeSelfDohOrFallback))
+-- R5 [1853 + Clean] 其余 → self_doh（带健康检查托底）
+addAction(LuaRule(isClean), logRouteHit('规则: clean 设备默认', routeSelfDohOrFallback))
 
--- ────────── 非 Clean MAC 设备（免过滤） ──────────
+-- ────────── 非 Clean（不拦截） / 1753（纯转发） ──────────
 
--- 7. 免过滤设备 → self_no_filter（带健康检查托底）
-addAction(LuaRule(isNoFilter), LuaAction(routeNoFilterOrFallback))
+-- R6 非 Clean / 1753 → self_no_filter（不可用则回落 cn_doh）
+addAction(LuaRule(isNoFilter), logRouteHit('规则: 免过滤设备', routeNoFilterOrFallback))
 
 -- ────────── 兜底 ──────────
 
--- 8. 理论上前面的规则已覆盖所有路径，但保留此兜底防止漏网
-addAction(AllRule(), PoolAction('cn_doh'))
+-- R8 防止漏网 → cn_doh
+addAction(AllRule(), logPoolHit('规则: 兜底', 'cn_doh'))
+
+-- ────────── 响应日志（结构化 JSON + 慢查询告警） ──────────
+
+addResponseAction(AllRule(), LuaResponseAction(function(dr)
+  local qname = dr.qname:toString():gsub('%.$', '')
+  if qname == '' then return DNSResponseAction.None end
+
+  local elapsed = dr:getElapsedUs()
+  local elapsed_ms = elapsed / 1000
+  local is_slow = elapsed > 500000
+
+  -- 获取后端信息（缓存命中或本地阻断时为 nil）
+  local backend = nil
+  local ok, bs = pcall(function() return dr:getSelectedBackend() end)
+  if ok and bs ~= nil then
+    local ok2, v = pcall(function() return bs.name end)
+    if ok2 and v then backend = tostring(v) end
+    if backend == nil then
+      ok2, v = pcall(function() return bs.address end)
+      if ok2 and v then backend = tostring(v) end
+    end
+  end
+
+  logJson('resp', {
+    {'qname', qname},
+    {'qtype', dr.qtype},
+    {'qtype_s', qtypeStr(dr.qtype)},
+    {'rcode', dr.rcode},
+    {'elapsed', elapsed_ms},
+    {'src', dr.remoteaddr:toString()},
+    {'mac', getMacReadable(dr)},
+    {'dev', getDeviceType(dr)},
+    {'rule', dr:getTag('rule_hit')},
+    {'pool', dr:getTag('pool_selected')},
+    {'backend', backend},
+    {'port', tonumber(dr.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
+    {'proto', dr:getProtocol()},
+  }, is_slow and 'warn' or 'info')
+  return DNSResponseAction.None
+end))

@@ -17,6 +17,7 @@
 - **全特性编译**：YAML、Rust、quiche (DoH3)、eBPF、XSK、DNSCrypt、dnstap、LMDB
 - **`dq:removeEDNSOption(code)` Lua 绑定**（补丁）：可在转发前剥离私有 EDNS option，解决上游 DoH 服务器 HTTP 502 拒绝问题
 - **`resolveViaDoH()` / `resolveViaDoHFirst()` Lua 绑定**（补丁）：内建 DoH bootstrap 解析器，替代外部 dnsproxy
+- **持久化缓存**（补丁）：PacketCache 二进制持久化，定期刷盘 + 启动加载 + 关闭保存，避免重启冷启动延迟
 - **LLVM/Clang + LTO thin 编译**：体积优化、性能更好
 
 选择 2.1.x 的原因：
@@ -135,6 +136,58 @@ docker compose ps dnsdist
 | overseas_doh | CF 隧道反代海外 DoH（托底用） | lumine.misakacloud.dev / kazuha.misakacloud.dev | DoH ✅ |
 
 无明文 UDP:53 出口。
+
+## 持久化缓存
+
+dnsdist 2.1.0-rc1 自定义补丁支持将 PacketCache 持久化到磁盘，避免重启后冷启动延迟。
+
+### 工作原理
+
+```
+启动时：检查 /var/cache/dnsdist/<pool>.cache → 存在则加载（保留剩余 TTL）
+运行中：每 300 秒检查 dirty flag → 有变更则写入 .tmp → rename（原子替换）
+关闭时：SIGTERM → 保存所有 cache → 退出
+```
+
+### 配置
+
+```lua
+setPersistentCacheConfig({
+    directory = '/var/cache/dnsdist',  -- 缓存目录，空 = 禁用
+    saveInterval = 300,                 -- 定期刷盘间隔（秒），0 = 仅 shutdown 时写入
+})
+```
+
+### Ansible 变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `dnsdist_persistent_cache_enabled` | `true` | 是否启用持久化缓存 |
+| `dnsdist_persistent_cache_dir` | `/var/cache/dnsdist` | 缓存目录路径 |
+| `dnsdist_persistent_cache_save_interval` | `300` | 定期刷盘间隔（秒） |
+
+### 手动操作
+
+```lua
+-- 在 dnsdist console 中
+pc = getPool(""):getCache()
+pc:save("/tmp/my-cache.bin")  -- 手动保存
+pc:load("/tmp/my-cache.bin")  -- 手动加载
+pc:isDirty()                   -- 检查是否有未保存的变更
+```
+
+### 二进制格式
+
+文件头：`DPC1` (4 bytes magic) + version (uint32) + entry count (uint32)
+
+每条记录：
+- key (uint32) — hash
+- qname wire format (uint16 len + bytes)
+- qtype, qclass, queryFlags (uint16 × 3)
+- receivedOverUDP, dnssecOK, hasSubnet (uint8 × 3)
+- subnet (optional: uint16 len + string)
+- added, validity (time_t × 2)
+- value (uint32 len + raw DNS response bytes)
 
 ## 健康检查托底
 

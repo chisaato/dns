@@ -5,3 +5,4 @@ dnsdist.conf
 lists/*.txt
 lists/*.json
 lists/*.log
+cache

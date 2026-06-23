@@ -1,0 +1,75 @@
+--- pdns/dnsdistdist/dnsdist.cc	2026-06-24 06:22:11.680131587 +0800
++++ pdns/dnsdistdist/dnsdist.cc	2026-06-24 06:23:18.035702068 +0800
+@@ -2539,6 +2539,26 @@
+       }
+       counter = 0;
+     }
++    {
++      const auto& pcSettings = dnsdist::configuration::getCurrentRuntimeConfiguration().d_persistentCacheSettings;
++      if (!pcSettings.d_directory.empty() && pcSettings.d_saveInterval > 0) {
++        static time_t s_lastPersistentCacheSave = 0;
++        time_t now = time(nullptr);
++        if (now - s_lastPersistentCacheSave >= static_cast<time_t>(pcSettings.d_saveInterval)) {
++          const auto& pools = dnsdist::configuration::getCurrentRuntimeConfiguration().d_pools;
++          for (const auto& entry : pools) {
++            const auto& pc = entry.second.packetCache;
++            if (pc && pc->isDirty()) {
++              auto fpath = pcSettings.d_directory + "/" + entry.first + ".cache";
++              infolog("Saving persistent cache for pool '%s' to '%s'", entry.first, fpath);
++              pc->save(fpath);
++              infolog("Saved persistent cache for pool '%s': %lu entries", entry.first, static_cast<unsigned long>(pc->getEntriesCount()));
++            }
++          }
++          s_lastPersistentCacheSave = now;
++        }
++      }
++    }
+   }
+ }
+ 
+@@ -3046,6 +3066,22 @@
+ 
+   {
+     auto lock = g_lua.lock();
++    {
++      const auto& pcSettings = dnsdist::configuration::getCurrentRuntimeConfiguration().d_persistentCacheSettings;
++      if (!pcSettings.d_directory.empty()) {
++        infolog("Shutting down: saving persistent caches to '%s'", pcSettings.d_directory);
++        const auto& pools = dnsdist::configuration::getCurrentRuntimeConfiguration().d_pools;
++        for (const auto& entry : pools) {
++          const auto& pc = entry.second.packetCache;
++          if (pc) {
++            auto fpath = pcSettings.d_directory + "/" + entry.first + ".cache";
++            infolog("Shutdown: saving persistent cache for pool '%s'", entry.first);
++            pc->save(fpath);
++          }
++        }
++        infolog("Shutdown: persistent cache save complete");
++      }
++    }
+     dnsdist::lua::hooks::runExitCallbacks(*lock);
+ #if defined(COVERAGE) || (defined(__SANITIZE_ADDRESS__) && defined(HAVE_LEAK_SANITIZER_INTERFACE))
+     cleanupLuaObjects(*lock);
+@@ -3745,6 +3781,22 @@
+     });
+ 
+     setupPools(setupLogger);
++    {
++      const auto& pcSettings = dnsdist::configuration::getCurrentRuntimeConfiguration().d_persistentCacheSettings;
++      if (!pcSettings.d_directory.empty()) {
++        const auto& pools = dnsdist::configuration::getCurrentRuntimeConfiguration().d_pools;
++        for (const auto& entry : pools) {
++          const auto& pc = entry.second.packetCache;
++          if (pc) {
++            auto fpath = pcSettings.d_directory + "/" + entry.first + ".cache";
++            if (pc->load(fpath)) {
++              SLOG(infolog("Loaded persistent cache for pool '%s'", entry.first),
++                   setupLogger->info(Logr::Info, "Loaded persistent cache", "pool", Logging::Loggable(entry.first)));
++            }
++          }
++        }
++      }
++    }
+ 
+     initFrontends(cmdLine);
+ 

@@ -56,3 +56,8 @@ dnsdist_enable_blocklist: true
 #       - "192.168.1.1:53"
 #     block_type_https: true
 dnsdist_custom_forwarding: []
+
+# dnsdist 持久化缓存（避免重启冷启动延迟）
+dnsdist_persistent_cache_enabled: true
+dnsdist_persistent_cache_dir: "/etc/dnsdist/cache"
+dnsdist_persistent_cache_save_interval: 300

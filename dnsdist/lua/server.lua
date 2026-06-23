@@ -129,15 +129,25 @@ function addUpstream(url, pool, name)
         tls = 'openssl',
         subjectName = host,
         pool = pool,
+        -- 健康检测间隔(秒)，设为 0 可临时禁用
         checkInterval = 30,
-        checkName = '.',
-        checkType = 1,
-        rise = 2,
-        fall = 3,
+        -- 使用更常见的域名来解析
+        checkName = 'www.baidu.com',
+        -- 傻逼玩意 AI 在这里幻觉写了个 1 虽然 A 记录确实在二进制里是 id 为 1.
+        -- 但是这里要求传入字符串,所以直接进行了一个非法查询.
+        checkType = 'A',
+        -- 我觉得超时可以多一点
+        checkTimeout = 5,
+        rise = 1,
+        -- 临时禁用证书验证
+        -- validateCertificates = false,
+        keyLogFile = '/etc/dnsdist/dnsdist.keylog',
+        fall = 5
       }
 
       if proto == 'https' or proto == 'h3' then
         params.dohPath = path
+        infolog("设定 doh 路径 " .. path)
         if proto == 'h3' then
           params.dohProtocol = 'h3'
         end
@@ -147,7 +157,9 @@ function addUpstream(url, pool, name)
       newServer(params)
     end
 
-    infolog("addUpstream: " .. proto .. "://" .. host .. " → " .. pool .. " (" .. tostring(#ips) .. " 个 IP)")
+    infolog(
+      "addUpstream: " .. proto .. "://" .. host .. path .. " → " .. pool .. " (" .. tostring(#ips) .. " 个 IP)"
+    )
     return
   end
 
@@ -199,7 +211,7 @@ function dohServer(domain, pool, port, path, name)
       subjectName = domain,
       dohPath = path or '/dns-query',
       pool = pool,
-      checkInterval = 30
+      checkInterval = 30 -- 设为 0 可临时禁用健康检测
     })
   end
   infolog("dohServer: " .. domain .. " → " .. pool .. " (" .. tostring(#ips) .. " 个 IP)")

@@ -1,0 +1,64 @@
+---@meta
+
+---@class ServerParams
+---@field address string
+---@field pool? string|LuaArray<string>
+---@field qps? integer
+---@field order? integer
+---@field weight? integer
+---@field retries? integer
+---@field tcpConnectTimeout? integer
+---@field tcpSendTimeout? integer
+---@field tcpRecvTimeout? integer
+---@field doh? boolean
+---@field dohPath? string
+---@field tls? string
+---@field subjectName? string
+---@field caStore? string
+---@field ciphers? string
+---@field ciphers13? string
+---@field certFile? string
+---@field keyFile? string
+---@field checkInterval? integer
+---@field checkClass? integer
+---@field checkType? integer
+---@field checkName? string
+---@field rise? integer
+---@field fall? integer
+---@field useClientSubnet? boolean
+---@field setCD? boolean
+---@field source? string
+---@field sourcePort? integer
+local ServerParams = {}
+
+---@class SVCRecordParameters
+---@field priority integer
+---@field serviceName string
+---@field target string
+---@field alpn? LuaArray<string>
+---@field noDefaultAlpn? boolean
+---@field port? integer
+---@field ipv4hint? LuaArray<string>
+---@field ipv6hint? LuaArray<string>
+---@field echconfig? string
+---@field mandatory? LuaArray<string>
+---@field dohpath? string
+---@field ohttp? boolean
+local SVCRecordParameters = {}
+
+---@class PacketCacheParams
+---@field maxSize integer
+---@field maxTTL? integer
+---@field minTTL? integer
+---@field maxNegativeTTL? integer
+---@field temporaryFailureTTL? integer
+---@field staleTTL? integer
+---@field keepStaleData? boolean
+---@field isCachingOnly? boolean
+---@field deforestTimeout? integer
+---@field cookieOnly? boolean
+---@field shared? boolean
+---@field options? LuaArray<integer>
+---@field name? string
+---@field doKeyCallback? boolean
+local PacketCacheParams = {}

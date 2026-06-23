@@ -1,13 +1,14 @@
 services:
   dnsdist:
-    restart: always
+    restart: no
     image: ccr.ccs.tencentyun.com/karasu/stck:dnsdist-2.1.0-rc1
     build:
       context: .
       dockerfile: ./dnsdist-build/Dockerfile
     network_mode: host
+    user: "1000"
     volumes:
-      - ./dnsdist:/etc/dnsdist:ro
+      - ./dnsdist:/etc/dnsdist
 
   # Rule Builder - 域名列表生成器
   rule-builder:

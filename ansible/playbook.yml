@@ -10,40 +10,41 @@
       failed_when: false
     - name: 加载用户覆盖变量
       ansible.builtin.include_vars:
-        file: ../vars.yml
+        file: "{{ playbook_dir }}/../vars.yml"
   tasks:
     - name: 创建必要目录
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ playbook_dir }}/../{{ item }}"
         state: directory
         mode: "0755"
       loop:
         - dnsdist/lua
+        - dnsdist/cache
         - dnsdist/lists
         - rule-builder
 
     - name: 确保 mac-local.txt 存在
       ansible.builtin.file:
-        path: dnsdist/lists/mac-local.txt
+        path: "{{ playbook_dir }}/../dnsdist/lists/mac-local.txt"
         state: touch
         mode: "0644"
 
     - name: 渲染 dnsdist.conf
       ansible.builtin.template:
         src: dnsdist.conf.j2
-        dest: dnsdist/dnsdist.conf
+        dest: "{{ playbook_dir }}/../dnsdist/dnsdist.conf"
         mode: "0644"
 
     - name: 渲染 rule-builder/config.yaml
       ansible.builtin.template:
         src: rule-builder-config.yaml.j2
-        dest: rule-builder/config.yaml
+        dest: "{{ playbook_dir }}/../rule-builder/config.yaml"
         mode: "0644"
 
     - name: 写入劫持域名列表文件
       ansible.builtin.copy:
         content: "{{ item.domains | join('\n') }}\n"
-        dest: "dnsdist/lists/hijack-{{ item.name }}.txt"
+        dest: "{{ playbook_dir }}/../dnsdist/lists/hijack-{{ item.name }}.txt"
         mode: "0644"
       loop: "{{ dnsdist_custom_forwarding | default([]) }}"
       loop_control:

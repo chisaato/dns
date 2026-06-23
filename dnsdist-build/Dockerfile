@@ -1,26 +1,22 @@
 # syntax=docker/dockerfile:1
-# 从零构建 dnsdist 2.1.0-rc1，全特性开启（含 YAML/Rust + MMDB）
-# 添加了 dq:removeEDNSOption(code) Lua 绑定
-#
-# 构建：
-#   docker build -t dnsdist-custom:2.1.0-rc1 -f Dockerfile.custom-dnsdist .
-#
+# 从 Debian trixie 构建 dnsdist 2.1.0-rc1，全特性开启（含 YAML/Rust + quiche）
 
 # ============================================================
 # Stage 1: 构建环境
 # ============================================================
-FROM powerdns/dnsdist-21:2.1.0-rc1 AS build-env
-USER root
+FROM debian:trixie AS build-env
 
-# 编译工具链 + 所有 dev 包
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     clang \
     curl \
+    file \
     lld \
-    meson \
+    lua-filesystem \
     ninja-build \
+    patch \
     pkg-config \
+    python3-pip \
     python3-yaml \
     ragel \
     wget \
@@ -42,19 +38,23 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libxdp-dev \
     && apt-get clean
 
-# 安装 Rust（仅用于编译 yaml 的 libdnsdist_rust.a）
+RUN pip3 install --break-system-packages meson
+
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y -q 2>/dev/null
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustc --version && cargo --version
 
-# 官方镜像已有 libdnsdist-quiche.so 运行时库，
-# 这里补上编译用的头文件，省去编译 quiche 的漫长过程
 RUN wget -qO /usr/include/quiche.h \
     https://raw.githubusercontent.com/cloudflare/quiche/0.29.1/quiche/include/quiche.h
 
 # ============================================================
-# Stage 2: 下载 dnsdist 源码
+# Stage 1.5: 从官方镜像提取 quiche 运行时库
+# ============================================================
+FROM powerdns/dnsdist-21:2.1.0-rc1 AS quiche-lib
+RUN cp /usr/lib/x86_64-linux-gnu/libdnsdist-quiche.so* /tmp/
+
+# ============================================================
+# Stage 2: 下载源码
 # ============================================================
 FROM build-env AS source-dl
 
@@ -63,21 +63,32 @@ RUN wget -qO- https://github.com/PowerDNS/pdns/archive/refs/tags/dnsdist-2.1.0-r
     | tar xz --strip-components=1
 
 # ============================================================
-# Stage 3: 编译 dnsdist（全特性，含 YAML）
+# Stage 3: 打补丁 + 编译
 # ============================================================
 FROM build-env AS builder
 
 COPY --from=source-dl /source /source
+COPY --from=quiche-lib /tmp/libdnsdist-quiche.so* /usr/lib/x86_64-linux-gnu/
 
-# quiche 的 pkg-config 文件（用外部文件替代 heredoc）
 COPY dnsdist-build/quiche.pc \
     /usr/lib/x86_64-linux-gnu/pkgconfig/quiche.pc
 
-# 打过补丁的 Lua 绑定
 COPY dnsdist-build/dnsdist-lua-bindings-dnsquestion.cc \
     /source/pdns/dnsdistdist/dnsdist-lua-bindings-dnsquestion.cc
 COPY dnsdist-build/dnsdist-lua-bindings-network.cc \
     /source/pdns/dnsdistdist/dnsdist-lua-bindings-network.cc
+
+COPY dnsdist-build/dnsdist-cache.hh \
+    /source/pdns/dnsdistdist/dnsdist-cache.hh
+COPY dnsdist-build/dnsdist-cache.cc \
+    /source/pdns/dnsdistdist/dnsdist-cache.cc
+COPY dnsdist-build/dnsdist-lua-bindings-packetcache.cc \
+    /source/pdns/dnsdistdist/dnsdist-lua-bindings-packetcache.cc
+COPY dnsdist-build/dnsdist-configuration.hh \
+    /source/pdns/dnsdistdist/dnsdist-configuration.hh
+
+COPY dnsdist-build/dnsdist-persistent-cache.patch /tmp/
+RUN patch -p0 -d /source < /tmp/dnsdist-persistent-cache.patch && rm /tmp/dnsdist-persistent-cache.patch
 
 WORKDIR /source/pdns/dnsdistdist
 RUN touch dnsdist.1
@@ -117,9 +128,33 @@ RUN mkdir /build && \
     strip /build/usr/local/bin/*
 
 # ============================================================
-# Stage 4: 运行时
+# Stage 4: 运行时（精简的 trixie）
 # ============================================================
-FROM powerdns/dnsdist-21:2.1.0-rc1
+FROM debian:trixie-slim
 
-# 打过补丁的 dnsdist 二进制
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libbpf1 \
+    libcap2 \
+    libcdb1 \
+    libedit2 \
+    libfstrm0 \
+    libgnutls30t64 \
+    liblmdb0 \
+    libluajit-5.1-2 \
+    libnghttp2-14 \
+    libre2-11 \
+    libsnmp40t64 \
+    libsodium23 \
+    libssl3t64 \
+    libxdp1 \
+    tini \
+    && apt-get clean
+
 COPY --from=builder /build/usr/local/bin/dnsdist /usr/local/bin/dnsdist
+COPY --from=quiche-lib /tmp/libdnsdist-quiche.so* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/lua/5.1/lfs.so /usr/lib/x86_64-linux-gnu/lua/5.1/
+RUN ldconfig
+
+ENTRYPOINT ["dnsdist"]
+CMD ["--supervised", "-C", "/etc/dnsdist/dnsdist.conf"]
