@@ -91,7 +91,10 @@ g_clean_macs = {}
 -- =============================================================================
 
 -- loadMacList(path, hash): 从文本文件加载 MAC 列表到指定哈希表
--- 每行一个 hex MAC（12 字符，无分隔符），自动去除首尾空白。
+-- 每行一个 MAC，支持两种格式：
+--   冒号分割  aa:bb:cc:dd:ee:ff（推荐，与云端下发格式一致）
+--   纯 hex    aabbccddeeff（兼容）
+-- 内部统一存储为纯 hex（12 字符）。自动去除首尾空白。
 -- 返回加载条数。
 function loadMacList(path, hash)
   local f = io.open(path, 'r')
@@ -102,10 +105,14 @@ function loadMacList(path, hash)
   local count = 0
   for line in f:lines() do
     line = line:match('^%s*(%S+)%s*$')
-    if line ~= nil and line ~= '' and #line == 12 then
-      hash[line] = true
+    if line == nil or line == '' then goto continue end
+    -- 统一为纯 hex：去掉冒号
+    local hex = line:gsub(':', '')
+    if #hex == 12 then
+      hash[hex] = true
       count = count + 1
     end
+    ::continue::
   end
   f:close()
   return count
@@ -130,6 +137,12 @@ end
 --
 -- 返回 DNSAction.None 以继续匹配后续规则。
 function observeMacOption65001(dq)
+  -- 仅对 1853 端口做 MAC 观测（1753 是不走分流的端口）
+  local localStr = dq.localaddr:toStringWithPort()
+  if not localStr:match(':1853$') then
+    return DNSAction.None
+  end
+
   local raw = getMacBytes(dq)
   if raw ~= nil then
     local hex = macBytesToHex(raw)

@@ -115,7 +115,7 @@ build_hijack('{{ fwd.name }}', { {% for u in fwd.upstream %}'{{ u }}'{% if not l
 -- =============================================================================
 
 -- ── 1. MAC 观测（必须第一条，仅 1853 端口） ──
-addAction(AllRule(), LuaAction(observeMacOption65001), {local = '{{ dnsdist_listen }}'})
+addAction(AllRule(), LuaAction(observeMacOption65001), {["local"] = '{{ dnsdist_listen }}'})
 
 -- ────────── Clean MAC 设备（需过滤） ──────────
 

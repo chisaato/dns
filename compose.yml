@@ -11,14 +11,16 @@ services:
 
   # Rule Builder - 域名列表生成器
   rule-builder:
-    profiles:
-      - rule-builder
+    # profiles:
+    #   - rule-builder
     image: ccr.ccs.tencentyun.com/karasu/stck:rule-builder-latest
     build:
       context: .
       dockerfile: ./rule-builder/Dockerfile
     restart: "no"
     network_mode: host
+    tty: true
+    stdin_open: true
     volumes:
       - ./:/workdir
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock

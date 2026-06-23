@@ -10,7 +10,7 @@
       failed_when: false
     - name: 加载用户覆盖变量
       ansible.builtin.include_vars:
-        file: vars.yml
+        file: ../vars.yml
   tasks:
     - name: 创建必要目录
       ansible.builtin.file:
@@ -20,6 +20,7 @@
       loop:
         - dnsdist/lua
         - dnsdist/lists
+        - rule-builder
 
     - name: 确保 mac-local.txt 存在
       ansible.builtin.file:

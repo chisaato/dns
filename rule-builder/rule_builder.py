@@ -158,7 +158,41 @@ def normalize_mac(mac: str) -> str | None:
     return mac
 
 
-def download(url: str, timeout: int = 30) -> str | None:
+def _read_with_progress(resp, label: str) -> bytes:
+    """Read response body with progress logging."""
+    total = resp.headers.get('Content-Length')
+    total = int(total) if total else None
+    chunks = []
+    downloaded = 0
+    last_log = 0
+
+    while True:
+        chunk = resp.read(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        downloaded += len(chunk)
+
+        if total:
+            pct = downloaded * 100 // total
+            # Log every 10% or at completion
+            if pct - last_log >= 10 or downloaded == total:
+                mb = downloaded / (1024 * 1024)
+                total_mb = total / (1024 * 1024)
+                print(f"    {label}: {pct}% ({mb:.1f}/{total_mb:.1f} MB)")
+                last_log = pct
+        else:
+            # No Content-Length, log every 1MB
+            mb = downloaded / (1024 * 1024)
+            if mb - last_log >= 1:
+                print(f"    {label}: {mb:.1f} MB downloaded")
+                last_log = int(mb)
+
+    print(f"    {label}: done ({downloaded / (1024 * 1024):.1f} MB)")
+    return b''.join(chunks)
+
+
+def download(url: str, timeout: int = 30, label: str = "download") -> str | None:
     """Download URL content as text. Returns None on failure."""
     req = urllib.request.Request(url, headers={
         'User-Agent': 'dnsdist-rule-builder/0.1',
@@ -166,7 +200,7 @@ def download(url: str, timeout: int = 30) -> str | None:
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = resp.read()
+                data = _read_with_progress(resp, label)
                 # Try UTF-8 first, then Latin-1 as fallback
                 try:
                     return data.decode('utf-8')
@@ -174,6 +208,7 @@ def download(url: str, timeout: int = 30) -> str | None:
                     return data.decode('latin-1')
         except Exception as e:
             if attempt < 2:
+                print(f"    {label}: retry {attempt + 1}/3 after error: {e}", file=sys.stderr)
                 time.sleep(5)
             else:
                 print(f"  [download failed after 3 retries: {e}]", file=sys.stderr)
@@ -181,7 +216,7 @@ def download(url: str, timeout: int = 30) -> str | None:
     return None
 
 
-def download_binary(url: str, timeout: int = 60) -> bytes | None:
+def download_binary(url: str, timeout: int = 60, label: str = "download") -> bytes | None:
     """Download URL content as binary. Returns None on failure."""
     req = urllib.request.Request(url, headers={
         'User-Agent': 'dnsdist-rule-builder/0.1',
@@ -189,9 +224,10 @@ def download_binary(url: str, timeout: int = 60) -> bytes | None:
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
+                return _read_with_progress(resp, label)
         except Exception as e:
             if attempt < 2:
+                print(f"    {label}: retry {attempt + 1}/3 after error: {e}", file=sys.stderr)
                 time.sleep(5)
             else:
                 print(f"  [download failed after 3 retries: {e}]", file=sys.stderr)
@@ -434,7 +470,7 @@ def process_source(source: dict, allow_domains: set) -> dict:
     action_set = nxdomain_domains if action == 'nxdomain' else zero_ip_domains
 
     print(f"  Downloading: {name} → {url}")
-    content = download(url)
+    content = download(url, label=name)
     if content is None:
         print(f"  [FAILED] {name} — skipping", file=sys.stderr)
         ignored_log.append(f"# SOURCE FAILED: {name} — download failed\n")
@@ -498,12 +534,19 @@ def process_source(source: dict, allow_domains: set) -> dict:
     return stats
 
 
+def format_mac(mac: str) -> str:
+    """Convert 12-char hex MAC to colon-separated format (aa:bb:cc:dd:ee:ff)."""
+    return ':'.join(mac[i:i+2] for i in range(0, 12, 2))
+
+
 def write_file(path: str, domains: set):
-    """Write sorted domain list to file."""
+    """Write sorted domain list to file atomically (tmp → rename)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w') as f:
         for domain in sorted(domains):
             f.write(domain + '\n')
+    os.replace(tmp_path, path)
 
 
 def main():
@@ -512,10 +555,20 @@ def main():
                         help='Path to config.yaml')
     parser.add_argument('--output-dir', default='dnsdist/lists',
                         help='Output directory for generated files')
+    parser.add_argument('--require-network', action='store_true', default=True,
+                        help='Exit without writing files if network is unavailable')
     args = parser.parse_args()
 
     config_path = args.config
     output_dir = args.output_dir
+
+    # Quick network check before heavy downloads
+    if args.require_network:
+        try:
+            urllib.request.urlopen('https://1.1.1.1', timeout=5)
+        except Exception:
+            print("Network unavailable — exiting without modifying files", file=sys.stderr)
+            sys.exit(0)
 
     print(f"Rule Builder — loading config: {config_path}")
     config = parse_config(config_path)
@@ -542,7 +595,7 @@ def main():
             name = src.get('name', 'unnamed')
             url = src.get('url', '')
             print(f"  Downloading: {name} → {url}")
-            content = download(url)
+            content = download(url, label=name)
             if content is None:
                 print(f"  [FAILED] {name} — skipping", file=sys.stderr)
                 ignored_log.append(f"# SOURCE FAILED: {name} (allowlist) — download failed\n")
@@ -635,7 +688,7 @@ def main():
     if mac_remote_url:
         print(f"\n[MAC lists]")
         print(f"  Downloading remote MAC list → {mac_remote_url}")
-        mac_content = download(mac_remote_url)
+        mac_content = download(mac_remote_url, label="mac-remote")
         if mac_content:
             remote_macs = set()
             for line in mac_content.splitlines():
@@ -667,15 +720,15 @@ def main():
                         all_macs.add(mac)
 
     if all_macs:
-        write_file(os.path.join(mac_lists_dir, 'mac-clean.txt'), all_macs)
-        print(f"  mac-clean.txt: {len(all_macs)} MACs (merged remote + local)")
+        write_file(os.path.join(mac_lists_dir, 'mac-clean.txt'), {format_mac(m) for m in all_macs})
+        print(f"  mac-clean.txt: {len(all_macs)} MACs (merged remote + local, colon format)")
 
     # Phase 4: Geosite CN domains
     geosite_url = config.get('geosite_url', '')
     if geosite_url and HAS_PROTOBUF:
         print(f"\n[Geosite CN]")
         print(f"  Downloading: {geosite_url}")
-        geo_data = download_binary(geosite_url)
+        geo_data = download_binary(geosite_url, label="geosite")
         if geo_data:
             print(f"  Size: {len(geo_data)} bytes")
             cn_domains = extract_cn_domains(geo_data)

@@ -14,7 +14,9 @@ local BS = {
   'https://223.5.5.5/dns-query',
   'https://223.6.6.6/dns-query',
   'https://1.12.12.12/dns-query',
-  'https://119.29.29.29/dns-query',
+  'https://120.53.53.53/dns-query'
+  -- 腾讯不使用下面这个 IP 提供 DoH
+  -- 'https://119.29.29.29/dns-query',
 }
 
 -- =============================================================================
@@ -94,21 +96,27 @@ function addUpstream(url, pool, name)
 
   -- ── 加密协议：解析域名（双栈全量）→ 每个 IP 建一条服务器 ──
   if proto == 'https' or proto == 'h3' or proto == 'quic' or proto == 'tls' then
-    local ips = resolveViaDoH(host, BS)
+    local ips
+    if host:match('^%d+%.%d+%.%d+%.%d+$') or host:match(':') then
+      -- host 已是纯 IP，跳过 DoH bootstrap
+      ips = { host }
+    else
+      ips = resolveViaDoH(host, BS)
+    end
     if ips == nil or #ips == 0 then
       errlog("addUpstream: 无法解析 '" .. host .. "'")
       return
     end
 
     for idx, ip in ipairs(ips) do
-      local suffix = ip:match(':') and '-6' or '-4'   -- IPv6 后缀 -6, IPv4 后缀 -4
+      local suffix = ip:match(':') and '-6' or '-4' -- IPv6 后缀 -6, IPv4 后缀 -4
       local params = {
         address = ip .. ':' .. port,
         name = name .. suffix,
         tls = 'openssl',
         subjectName = host,
         pool = pool,
-        checkInterval = 30,
+        checkInterval = 30
       }
 
       if proto == 'https' or proto == 'h3' then
@@ -135,7 +143,7 @@ function addUpstream(url, pool, name)
       name = name,
       pool = pool,
       tcp = true,
-      checkInterval = 10,
+      checkInterval = 10
     })
     infolog("addUpstream: tcp://" .. host .. " → " .. pool)
     return
@@ -146,7 +154,7 @@ function addUpstream(url, pool, name)
     address = host .. ':' .. port,
     name = name,
     pool = pool,
-    checkInterval = 10,
+    checkInterval = 10
   })
   infolog("addUpstream: " .. host .. " → " .. pool .. " (udp)")
 end
@@ -157,7 +165,12 @@ end
 -- 保留向后兼容，新代码建议用 addUpstream()。
 -- =============================================================================
 function dohServer(domain, pool, port, path, name)
-  local ips = resolveViaDoH(domain, BS)
+  local ips
+  if domain:match('^%d+%.%d+%.%d+%.%d+$') or domain:match(':') then
+    ips = { domain }
+  else
+    ips = resolveViaDoH(domain, BS)
+  end
   if ips == nil or #ips == 0 then
     errlog("dohServer: 无法解析 '" .. domain .. "'")
     return
@@ -171,7 +184,7 @@ function dohServer(domain, pool, port, path, name)
       subjectName = domain,
       dohPath = path or '/dns-query',
       pool = pool,
-      checkInterval = 30,
+      checkInterval = 30
     })
   end
   infolog("dohServer: " .. domain .. " → " .. pool .. " (" .. tostring(#ips) .. " IPs)")
