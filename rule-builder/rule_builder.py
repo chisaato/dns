@@ -13,7 +13,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -235,6 +237,29 @@ def download_binary(url: str, timeout: int = 60, label: str = "download") -> byt
     return None
 
 
+def download_to_file(url: str, dest_path: str, timeout: int = 30, label: str = "download") -> bool:
+    """Download URL content directly to a file. Returns True on success."""
+    req = urllib.request.Request(url, headers={
+        'User-Agent': 'dnsdist-rule-builder/0.1',
+    })
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = _read_with_progress(resp, label)
+                os.makedirs(os.path.dirname(dest_path) or '.', exist_ok=True)
+                with open(dest_path, 'wb') as f:
+                    f.write(data)
+                return True
+        except Exception as e:
+            if attempt < 2:
+                print(f"    {label}: retry {attempt + 1}/3 after error: {e}", file=sys.stderr)
+                time.sleep(5)
+            else:
+                print(f"  [download failed after 3 retries: {e}]", file=sys.stderr)
+                return False
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Geosite protobuf parsing
 # ---------------------------------------------------------------------------
@@ -444,9 +469,12 @@ def is_unsupported_line(line: str) -> bool:
 # Main
 # ---------------------------------------------------------------------------
 
-def process_source(source: dict, allow_domains: set) -> dict:
+def process_source(source: dict, allow_domains: set, content: str | None = None) -> dict:
     """
-    Download and parse a single rule source. Returns stats dict.
+    Parse a rule source and populate block sets. Returns stats dict.
+
+    If *content* is provided, uses it directly (pre-downloaded from staging).
+    Otherwise falls back to downloading from the source URL (legacy path).
 
     Also populates global `nxdomain_domains`, `zero_ip_domains`, and
     logs ignored lines to `ignored_log`.
@@ -469,12 +497,14 @@ def process_source(source: dict, allow_domains: set) -> dict:
 
     action_set = nxdomain_domains if action == 'nxdomain' else zero_ip_domains
 
-    print(f"  Downloading: {name} → {url}")
-    content = download(url, label=name)
     if content is None:
-        print(f"  [FAILED] {name} — skipping", file=sys.stderr)
-        ignored_log.append(f"# SOURCE FAILED: {name} — download failed\n")
-        return stats
+        # Legacy download path (not used when staging is active)
+        print(f"  Downloading: {name} → {url}")
+        content = download(url, label=name)
+        if content is None:
+            print(f"  [FAILED] {name} — skipping", file=sys.stderr)
+            ignored_log.append(f"# SOURCE FAILED: {name} — download failed\n")
+            return stats
 
     lines = content.splitlines()
     parse_count = 0
@@ -549,6 +579,32 @@ def write_file(path: str, domains: set):
     os.replace(tmp_path, path)
 
 
+def _read_staging_text(path: str) -> str:
+    """Read a staging text file with UTF-8 → Latin-1 encoding fallback."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return data.decode('latin-1')
+
+
+def _stage_download(tmp_dir: str, name: str, url: str, timeout: int = 30) -> str | None:
+    """Download a single source to staging directory. Returns path or None on failure."""
+    safe = re.sub(r'[^\w.\-]+', '_', name)
+    dest = os.path.join(tmp_dir, safe)
+    print(f"  Downloading: {name} → {url}")
+    ok = download_to_file(url, dest, timeout=timeout, label=name)
+    if not ok:
+        return None
+    size = os.path.getsize(dest)
+    if size == 0:
+        print(f"  [FAILED] {name} — downloaded file is empty", file=sys.stderr)
+        return None
+    print(f"    {name}: {size:,} bytes")
+    return dest
+
+
 def main():
     parser = argparse.ArgumentParser(description='DNS rule builder for dnsdist')
     parser.add_argument('--config', default='rule-builder/config.yaml',
@@ -581,25 +637,79 @@ def main():
 
     print(f"Sources: {len(enabled_sources)} block, {len(enabled_allowlist)} allowlist\n")
 
-    # Global state — all sources contribute to these
+    # -----------------------------------------------------------------------
+    # Phase 0: Download ALL sources to staging directory
+    # -----------------------------------------------------------------------
+    tmp_dir = tempfile.mkdtemp(prefix='rule-builder-')
+    print(f"[Staging] Temporary directory: {tmp_dir}")
+    staging_ok = True
+
+    # Staging: all files that need to be downloaded
+    staging_allow = {}         # name → path
+    for src in enabled_allowlist:
+        name = src.get('name', 'unnamed')
+        url = src.get('url', '')
+        path = _stage_download(tmp_dir, name, url)
+        if path is None:
+            staging_ok = False
+            break
+        staging_allow[name] = path
+
+    staging_block = {}          # name → path
+    if staging_ok:
+        for src in enabled_sources:
+            name = src.get('name', 'unnamed')
+            url = src.get('url', '')
+            path = _stage_download(tmp_dir, name, url)
+            if path is None:
+                staging_ok = False
+                break
+            staging_block[name] = path
+
+    staging_mac = None
+    mac_remote_url = config.get('mac_remote_url', '')
+    if staging_ok and mac_remote_url:
+        path = _stage_download(tmp_dir, 'mac-remote', mac_remote_url)
+        if path is None:
+            staging_ok = False
+        else:
+            staging_mac = path
+
+    staging_geosite = None
+    geosite_url = config.get('geosite_url', '')
+    if staging_ok and geosite_url:
+        path = _stage_download(tmp_dir, 'geosite', geosite_url, timeout=60)
+        if path is None:
+            staging_ok = False
+        else:
+            staging_geosite = path
+
+    if not staging_ok:
+        print(f"\n[ABORT] Download failed — staging cleaned up, "
+              f"output files not modified.", file=sys.stderr)
+        shutil.rmtree(tmp_dir)
+        sys.exit(1)
+
+    print(f"[Staging] All downloads confirmed (%d sources) — processing\n"
+          % (len(staging_block) + len(staging_allow)))
+
+    # -----------------------------------------------------------------------
+    # Phase 1: Global state + allowlist
+    # -----------------------------------------------------------------------
     global nxdomain_domains, zero_ip_domains, ignored_log
     nxdomain_domains = set()
     zero_ip_domains = set()
     ignored_log = []
-
-    # Phase 1: Download allowlist sources first
     allow_domains = set()
+
     if enabled_allowlist:
         print("[Allowlist sources]")
         for src in enabled_allowlist:
             name = src.get('name', 'unnamed')
-            url = src.get('url', '')
-            print(f"  Downloading: {name} → {url}")
-            content = download(url, label=name)
-            if content is None:
-                print(f"  [FAILED] {name} — skipping", file=sys.stderr)
-                ignored_log.append(f"# SOURCE FAILED: {name} (allowlist) — download failed\n")
+            staging_path = staging_allow.get(name)
+            if not staging_path:
                 continue
+            content = _read_staging_text(staging_path)
             count = 0
             for line in content.splitlines():
                 line = line.strip()
@@ -617,19 +727,25 @@ def main():
                 if domain:
                     allow_domains.add(domain)
                     count += 1
-            print(f"    allowlist domains: {count}")
+            print(f"    {name}: {count} domains")
 
-    # Phase 2: Download and parse block sources
+    # -----------------------------------------------------------------------
+    # Phase 2: Block sources (from staging)
+    # -----------------------------------------------------------------------
     all_source_stats = []
     nxdomain_contrib = {}
     zero_ip_contrib = {}
 
     for src in enabled_sources:
+        name = src.get('name', 'unnamed')
+        staging_path = staging_block.get(name)
+        if not staging_path:
+            continue
+        content = _read_staging_text(staging_path)
         nx_before = len(nxdomain_domains)
         zi_before = len(zero_ip_domains)
-        stats = process_source(src, allow_domains)
+        stats = process_source(src, allow_domains, content=content)
         all_source_stats.append(stats)
-
         action = src.get('action', 'nxdomain')
         if action == 'nxdomain':
             stats['in_block_nxdomain'] = len(nxdomain_domains) - nx_before
@@ -643,7 +759,9 @@ def main():
         for dom in sorted(overlap):
             ignored_log.append(f"[DEDUP] {dom} in both nxdomain and zero_ip → nxdomain wins\n")
 
-    # Write output files
+    # -----------------------------------------------------------------------
+    # Phase 3: Write output files (each atomically via tmp → rename)
+    # -----------------------------------------------------------------------
     print(f"\nWriting output to {output_dir}/")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -661,7 +779,7 @@ def main():
             f.write(entry)
     print(f"  ignored-rules.log : {len(ignored_log)} entries")
 
-    # Write stats.json
+    # Write stats.json atomically
     stats_data = {
         'sources': all_source_stats,
         'totals': {
@@ -673,35 +791,34 @@ def main():
         },
         'generated_at': datetime.now(timezone.utc).isoformat(),
     }
-    with open(os.path.join(output_dir, 'stats.json'), 'w') as f:
+    stats_tmp = os.path.join(output_dir, 'stats.json.tmp')
+    with open(stats_tmp, 'w') as f:
         json.dump(stats_data, f, indent=2, ensure_ascii=False)
+    os.replace(stats_tmp, os.path.join(output_dir, 'stats.json'))
 
     total_loaded = sum(s['loaded'] for s in all_source_stats)
     total_ignored = sum(s['ignored'] for s in all_source_stats)
     print(f"\nDone. {total_loaded} loaded, {total_ignored} ignored, "
           f"{len(allow_domains)} allowlisted.")
 
-    # Phase 3: MAC lists
-    mac_remote_url = config.get('mac_remote_url', '')
-    mac_lists_dir = 'dnsdist/lists'
+    # -----------------------------------------------------------------------
+    # Phase 4: MAC lists
+    # -----------------------------------------------------------------------
+    mac_lists_dir = output_dir
 
-    if mac_remote_url:
+    if staging_mac:
+        remote_macs = set()
+        content = _read_staging_text(staging_mac)
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            mac = normalize_mac(line)
+            if mac:
+                remote_macs.add(mac)
+        write_file(os.path.join(mac_lists_dir, 'mac-remote.txt'), remote_macs)
         print(f"\n[MAC lists]")
-        print(f"  Downloading remote MAC list → {mac_remote_url}")
-        mac_content = download(mac_remote_url, label="mac-remote")
-        if mac_content:
-            remote_macs = set()
-            for line in mac_content.splitlines():
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                mac = normalize_mac(line)
-                if mac:
-                    remote_macs.add(mac)
-            write_file(os.path.join(mac_lists_dir, 'mac-remote.txt'), remote_macs)
-            print(f"    mac-remote.txt: {len(remote_macs)} MACs")
-        else:
-            print(f"  [FAILED] remote MAC list — skipping", file=sys.stderr)
+        print(f"    mac-remote.txt: {len(remote_macs)} MACs")
 
     # Merge MAC lists: remote + local → mac-clean.txt
     all_macs = set()
@@ -723,24 +840,28 @@ def main():
         write_file(os.path.join(mac_lists_dir, 'mac-clean.txt'), {format_mac(m) for m in all_macs})
         print(f"  mac-clean.txt: {len(all_macs)} MACs (merged remote + local, colon format)")
 
-    # Phase 4: Geosite CN domains
-    geosite_url = config.get('geosite_url', '')
-    if geosite_url and HAS_PROTOBUF:
+    # -----------------------------------------------------------------------
+    # Phase 5: Geosite CN domains
+    # -----------------------------------------------------------------------
+    if staging_geosite and HAS_PROTOBUF:
         print(f"\n[Geosite CN]")
-        print(f"  Downloading: {geosite_url}")
-        geo_data = download_binary(geosite_url, label="geosite")
-        if geo_data:
-            print(f"  Size: {len(geo_data)} bytes")
-            cn_domains = extract_cn_domains(geo_data)
-            if cn_domains:
-                write_file(os.path.join(mac_lists_dir, 'cn.txt'), cn_domains)
-                print(f"  cn.txt: {len(cn_domains)} domains")
-            else:
-                print(f"  [ERROR] No CN domains extracted", file=sys.stderr)
+        with open(staging_geosite, 'rb') as f:
+            geo_data = f.read()
+        print(f"  Size: {len(geo_data)} bytes")
+        cn_domains = extract_cn_domains(geo_data)
+        if cn_domains:
+            write_file(os.path.join(mac_lists_dir, 'cn.txt'), cn_domains)
+            print(f"  cn.txt: {len(cn_domains)} domains")
         else:
-            print(f"  [FAILED] geosite download — skipping", file=sys.stderr)
+            print(f"  [ERROR] No CN domains extracted", file=sys.stderr)
     elif geosite_url and not HAS_PROTOBUF:
         print(f"\n[Geosite CN] Skipped — protobuf not installed", file=sys.stderr)
+
+    # -----------------------------------------------------------------------
+    # Cleanup
+    # -----------------------------------------------------------------------
+    shutil.rmtree(tmp_dir)
+    print(f"\nStaging cleaned up: {tmp_dir}")
 
 
 if __name__ == '__main__':

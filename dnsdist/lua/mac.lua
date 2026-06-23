@@ -81,6 +81,87 @@ function getMacBytes(dq)
 end
 
 -- =============================================================================
+-- 结构化 JSON 日志工具
+-- =============================================================================
+
+-- QType 数字 → 字符串映射（常见类型）
+QTYPE_NAMES = {
+  [1] = 'A', [2] = 'NS', [5] = 'CNAME', [6] = 'SOA', [12] = 'PTR',
+  [15] = 'MX', [16] = 'TXT', [28] = 'AAAA', [33] = 'SRV', [41] = 'OPT',
+  [43] = 'DS', [44] = 'SSHFP', [46] = 'RRSIG', [47] = 'NSEC', [48] = 'DNSKEY',
+  [64] = 'SVCB', [65] = 'HTTPS', [255] = 'ANY',
+}
+
+-- qtypeStr(n): 返回 QType 字符串，未知返回 "TYPE{n}"
+function qtypeStr(n)
+  return QTYPE_NAMES[n] or ('TYPE' .. tostring(n))
+end
+
+-- jsonEscape(s): 转义 JSON 字符串中的特殊字符
+function jsonEscape(s)
+  if s == nil then return '' end
+  return (s:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t'))
+end
+
+-- logJson(event, fields, level): 输出结构化 JSON 日志
+--   event  — 事件类型字符串（如 "query" / "resp" / "mac"）
+--   fields — { {key, value}, {key, value}, ... }（有序排列）
+--   level  — 日志级别：'info'（默认）/ 'warn' / 'err'
+function logJson(event, fields, level)
+  level = level or 'info'
+  local parts = {'{"e":"' .. jsonEscape(event) .. '"'}
+  for _, item in ipairs(fields) do
+    parts[#parts+1] = ',"' .. jsonEscape(item[1]) .. '":'
+    local v = item[2]
+    if v == nil then
+      parts[#parts+1] = 'null'
+    elseif type(v) == 'string' then
+      parts[#parts+1] = '"' .. jsonEscape(v) .. '"'
+    elseif type(v) == 'number' then
+      if v == math.floor(v) then
+        parts[#parts+1] = tostring(math.floor(v))
+      else
+        parts[#parts+1] = string.format('%.3f', v)
+      end
+    elseif type(v) == 'boolean' then
+      parts[#parts+1] = v and 'true' or 'false'
+    else
+      parts[#parts+1] = 'null'
+    end
+  end
+  parts[#parts+1] = '}'
+  local msg = table.concat(parts)
+  if level == 'warn' then
+    warnlog(msg)
+  elseif level == 'err' then
+    errlog(msg)
+  else
+    infolog(msg)
+  end
+end
+
+-- setActionTags(dq, rule, pool): 为下游响应日志设置 tag
+function setActionTags(dq, rule, pool)
+  dq:setTag('rule_hit', rule or '')
+  if pool then dq:setTag('pool_selected', pool) end
+end
+
+-- getMacReadable(dq): 从 mac tag 获取可读 MAC 地址（"aa:bb:cc:dd:ee:ff"）
+function getMacReadable(dq)
+  local mac = dq:getTag('mac')
+  if mac == nil or mac == '' or mac == 'default-clean' then return '' end
+  return mac:gsub('(..)', '%1:'):gsub(':$', '')
+end
+
+-- getDeviceType(dq): 从 mac tag 推断设备类型（"clean" / "no_filter" / ""）
+function getDeviceType(dq)
+  local mac = dq:getTag('mac')
+  if mac == nil or mac == '' then return '' end
+  if mac == 'default-clean' then return 'clean' end
+  return g_clean_macs[mac] and 'clean' or 'no_filter'
+end
+
+-- =============================================================================
 -- 全局状态 — Clean 设备 MAC 哈希表
 -- =============================================================================
 -- 以无分隔符 hex（如 "047c16bf923c"）为 key，true 为 value。
@@ -149,20 +230,30 @@ function observeMacOption65001(dq)
   if raw ~= nil then
     local hex = macBytesToHex(raw)
     local mac = bytesToMac(raw)
-    infolog('edns65001_mac_found=' .. mac)
     -- 保存 MAC 为 tag，供下游 isClean / isNoFilter 使用
     dq:setTag('mac', hex)
+    logJson('mac', {
+      {'mac', mac},
+      {'src_edns', true},
+      {'qname', dq.qname:toString():gsub('%.$', '')},
+      {'qtype', dq.qtype},
+    })
     -- 转发前剥离 EDNS 65001，避免上游 DoH 拒绝
     local ok, err = pcall(function ()
         dq:removeEDNSOption(MAC_OPTION_CODE)
       end)
     if not ok then
-      warnlog('mac: 剥离 EDNS option 失败: ' .. tostring(err))
+      logJson('err', {{'msg', '剥离 EDNS 65001 失败'}, {'err', tostring(err)}}, 'warn')
     end
   else
     -- 无 EDNS 65001 → 默认视为 Clean 设备，走 blocklist → self_doh
     dq:setTag('mac', 'default-clean')
-    infolog('未通过 EDNS 携带 MAC,视为 clean')
+    logJson('mac', {
+      {'src_edns', false},
+      {'note', 'default_clean'},
+      {'qname', dq.qname:toString():gsub('%.$', '')},
+      {'qtype', dq.qtype},
+    })
   end
   return DNSAction.None
 end
@@ -174,15 +265,40 @@ end
 -- logPoolHit(msg, pool): 记录日志并转发到指定 pool
 function logPoolHit(msg, pool)
   return LuaAction(function(dq)
-    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    setActionTags(dq, msg, pool)
+    logJson('query', {
+      {'qname', dq.qname:toString():gsub('%.$', '')},
+      {'qtype', dq.qtype},
+      {'qtype_s', qtypeStr(dq.qtype)},
+      {'src', dq.remoteaddr:toStringWithPort()},
+      {'mac', getMacReadable(dq)},
+      {'dev', getDeviceType(dq)},
+      {'rule', msg},
+      {'action', 'pool'},
+      {'pool', pool},
+      {'port', tonumber(dq.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
+      {'proto', dq:getProtocol()},
+    })
     return DNSAction.Pool, pool
   end)
 end
 
--- logRcodeHit(msg, rcode): 记录日志并返回指定 rcode
+-- logRcodeHit(msg, rcode): 记录日志并返回 NXDOMAIN
 function logRcodeHit(msg, rcode)
   return LuaAction(function(dq)
-    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    setActionTags(dq, msg)
+    logJson('query', {
+      {'qname', dq.qname:toString():gsub('%.$', '')},
+      {'qtype', dq.qtype},
+      {'qtype_s', qtypeStr(dq.qtype)},
+      {'src', dq.remoteaddr:toStringWithPort()},
+      {'mac', getMacReadable(dq)},
+      {'dev', getDeviceType(dq)},
+      {'rule', msg},
+      {'action', 'nxdomain'},
+      {'port', tonumber(dq.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
+      {'proto', dq:getProtocol()},
+    })
     return DNSAction.NXDOMAIN
   end)
 end
@@ -190,7 +306,19 @@ end
 -- logSpoofHit(msg): 记录日志并返回 zero-IP
 function logSpoofHit(msg)
   return LuaAction(function(dq)
-    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    setActionTags(dq, msg)
+    logJson('query', {
+      {'qname', dq.qname:toString():gsub('%.$', '')},
+      {'qtype', dq.qtype},
+      {'qtype_s', qtypeStr(dq.qtype)},
+      {'src', dq.remoteaddr:toStringWithPort()},
+      {'mac', getMacReadable(dq)},
+      {'dev', getDeviceType(dq)},
+      {'rule', msg},
+      {'action', 'spoof'},
+      {'port', tonumber(dq.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
+      {'proto', dq:getProtocol()},
+    })
     return DNSAction.Spoof
   end)
 end
@@ -198,7 +326,19 @@ end
 -- logRouteHit(msg, routeFunc): 记录日志并执行路由函数
 function logRouteHit(msg, routeFunc)
   return LuaAction(function(dq)
-    infolog(msg .. ' → ' .. dq.qname:toString() .. ' [' .. dq.remoteaddr:toString() .. ']')
+    setActionTags(dq, msg)
+    logJson('query', {
+      {'qname', dq.qname:toString():gsub('%.$', '')},
+      {'qtype', dq.qtype},
+      {'qtype_s', qtypeStr(dq.qtype)},
+      {'src', dq.remoteaddr:toStringWithPort()},
+      {'mac', getMacReadable(dq)},
+      {'dev', getDeviceType(dq)},
+      {'rule', msg},
+      {'action', 'route'},
+      {'port', tonumber(dq.localaddr:toStringWithPort():match(':(%d+)$')) or 0},
+      {'proto', dq:getProtocol()},
+    })
     return routeFunc(dq)
   end)
 end
