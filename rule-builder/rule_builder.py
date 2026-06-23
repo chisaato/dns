@@ -621,7 +621,7 @@ def main():
     # Quick network check before heavy downloads
     if args.require_network:
         try:
-            urllib.request.urlopen('https://1.1.1.1', timeout=5)
+            urllib.request.urlopen('https://www.baidu.com', timeout=5)
         except Exception:
             print("Network unavailable — exiting without modifying files", file=sys.stderr)
             sys.exit(0)

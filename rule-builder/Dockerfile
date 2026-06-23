@@ -11,5 +11,5 @@ RUN apk add --no-cache bash && pip3 install --no-cache-dir protobuf
 
 WORKDIR /app
 COPY rule-builder/*.py ./
-
+ENV PYTHONUNBUFFERED=1
 CMD ["python3", "rule_builder.py"]
