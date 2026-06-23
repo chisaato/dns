@@ -1,6 +1,6 @@
 services:
   dnsdist:
-    restart: no
+    restart: always
     image: ccr.ccs.tencentyun.com/karasu/stck:dnsdist-2.1.0-rc1
     build:
       context: .
@@ -12,9 +12,7 @@ services:
 
   # Rule Builder - 域名列表生成器
   rule-builder:
-    # profiles:
-    #   - rule-builder
-    image: ccr.ccs.tencentyun.com/karasu/stck:rule-builder-latest
+    image: ccr.ccs.tencentyun.com/karasu/stck:rule-builder
     build:
       context: .
       dockerfile: ./rule-builder/Dockerfile
