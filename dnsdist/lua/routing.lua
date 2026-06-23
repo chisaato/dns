@@ -74,7 +74,7 @@ end
 function build_hijack(name, upstream, blockHttps)
   if blockHttps == nil then blockHttps = true end
   if name == nil or type(upstream) ~= 'table' or #upstream == 0 then
-    warnlog("hijack: skipped '" .. tostring(name) .. "' — invalid params")
+    warnlog("hijack: 跳过 '" .. tostring(name) .. "' — 参数无效")
     return
   end
 
@@ -105,5 +105,5 @@ function build_hijack(name, upstream, blockHttps)
   end
   addAction(SuffixMatchNodeRule(node), PoolAction(poolName))
 
-  infolog("hijack: built '" .. name .. "' — " .. tostring(#upstream) .. " servers, " .. (blockHttps and "block QTYPE65" or "no QTYPE65 block"))
+  infolog("hijack: 已构建 '" .. name .. "' — " .. tostring(#upstream) .. " 台服务器, " .. (blockHttps and "阻断 QTYPE65" or "不阻断 QTYPE65"))
 end

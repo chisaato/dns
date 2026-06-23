@@ -25,16 +25,17 @@ services:
       - ./:/workdir
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     working_dir: /workdir
-    command: ["python3", "rule-builder/rule_builder.py"]
+    command: ["sleep", "infinity"]
     labels:
       ofelia.enabled: "true"
-      ofelia.job-run.refresh.schedule: "0 3 * * *"
-      ofelia.job-run.refresh.command: "python3 rule-builder/rule_builder.py"
+      ofelia.job-exec.refresh.schedule: "0 3 * * *"
+      ofelia.job-exec.refresh.command: "python3 rule-builder/rule_builder.py"
 
   # Ofelia - 定时任务调度
   ofelia:
     restart: always
     image: mcuadros/ofelia:latest
+    command: daemon --docker
     volumes:
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 

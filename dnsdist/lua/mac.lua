@@ -19,18 +19,20 @@ MAC_OPTION_CODE = 65001
 -- bytesToMac(raw): 6 字节原始数据 → "xx:xx:xx:xx:xx:xx" 格式（人类可读日志）
 function bytesToMac(raw)
   if raw == nil or #raw ~= 6 then return nil end
-  return string.format('%02x:%02x:%02x:%02x:%02x:%02x',
-    string.byte(raw, 1), string.byte(raw, 2), string.byte(raw, 3),
-    string.byte(raw, 4), string.byte(raw, 5), string.byte(raw, 6))
+  return string.format(
+    '%02x:%02x:%02x:%02x:%02x:%02x', string.byte(raw, 1), string.byte(raw, 2), string.byte(raw, 3), string.byte(raw, 4),
+    string.byte(raw, 5), string.byte(raw, 6)
+  )
 end
 
 -- macBytesToHex(raw): 6 字节原始数据 → "xxxxxxxxxxxx" 无分隔符 hex
 -- 用于 dq:setTag('mac', ...) 和 g_clean_macs 哈希表查找
 function macBytesToHex(raw)
   if raw == nil then return nil end
-  return string.format('%02x%02x%02x%02x%02x%02x',
-    string.byte(raw, 1), string.byte(raw, 2), string.byte(raw, 3),
-    string.byte(raw, 4), string.byte(raw, 5), string.byte(raw, 6))
+  return string.format(
+    '%02x%02x%02x%02x%02x%02x', string.byte(raw, 1), string.byte(raw, 2), string.byte(raw, 3), string.byte(raw, 4),
+    string.byte(raw, 5), string.byte(raw, 6)
+  )
 end
 
 -- getOptionPayload(option): 统一提取 EDNS option 的 payload 内容
@@ -99,7 +101,7 @@ g_clean_macs = {}
 function loadMacList(path, hash)
   local f = io.open(path, 'r')
   if f == nil then
-    warnlog('mac: cannot open ' .. path)
+    warnlog('mac: 无法打开 ' .. path)
     return 0
   end
   local count = 0
@@ -121,7 +123,7 @@ end
 -- loadDevices(): 加载"需过滤设备"列表 → g_clean_macs
 function loadDevices()
   local count = loadMacList('/etc/dnsdist/lists/mac-clean.txt', g_clean_macs)
-  infolog('mac: loaded ' .. count .. ' clean device MACs')
+  infolog('mac: 加载了 ' .. count .. ' 个 clean 设备 MAC')
 end
 
 -- =============================================================================
@@ -151,12 +153,16 @@ function observeMacOption65001(dq)
     -- 保存 MAC 为 tag，供下游 isClean / isNoFilter 使用
     dq:setTag('mac', hex)
     -- 转发前剥离 EDNS 65001，避免上游 DoH 拒绝
-    local ok, err = pcall(function() dq:removeEDNSOption(MAC_OPTION_CODE) end)
+    local ok, err = pcall(function ()
+        dq:removeEDNSOption(MAC_OPTION_CODE)
+      end)
     if not ok then
-      warnlog('mac: removeEDNSOption failed: ' .. tostring(err))
+      warnlog('mac: 剥离 EDNS option 失败: ' .. tostring(err))
     end
   else
-    infolog('edns65001_mac_missing_or_invalid')
+    -- 无 EDNS 65001 → 默认视为 Clean 设备，走 blocklist → self_doh
+    dq:setTag('mac', 'default-clean')
+    infolog('未通过 EDNS 携带 MAC,视为 clean')
   end
   return DNSAction.None
 end
@@ -167,23 +173,32 @@ end
 -- isClean / isNoFilter 通过 dq:getTag('mac') 读取 observeMacOption65001 设置
 -- 的 tag，然后查 g_clean_macs 判断设备类型。
 --
--- 无 EDNS 65001 时 mac tag 为空字符串：
---   - isClean 返回 false（没有 MAC 无法确认是 Clean 设备）
---   - isNoFilter 返回 true（安全默认：视为免过滤设备）
+-- MAC tag 取值含义：
+--   空串 / nil    → 1753 端口（observe 跳过）→ isClean=false, isNoFilter=true
+--   'default-clean' → 1853 无 EDNS 65001   → isClean=true,  isNoFilter=false
+--   12 字符 hex   → 携带 EDNS 65001        → 查 g_clean_macs
 -- =============================================================================
 
--- isClean(dq): 是否在 mac-clean.txt 中（需过滤设备）
--- 返回 true 表示该设备走 blacklist → self_doh 链路
+-- isClean(dq): 是否需过滤设备（走 blocklist → self_doh）
+-- 以下情况返回 true：
+--   - 携带 EDNS 65001 且 MAC 在 mac-clean.txt 中
+--   - 1853 端口未携带 EDNS 65001（默认 clean）
+-- 1753 端口无 tag（observe 跳过），始终返回 false
 function isClean(dq)
   local hex = dq:getTag('mac')
-  if hex == '' then return false end
+  if hex == '' or hex == nil then return false end
+  if hex == 'default-clean' then return true end
   return g_clean_macs[hex] == true
 end
 
--- isNoFilter(dq): 是否为免过滤设备（不在 clean 列表中 或 无 MAC）
--- 无 MAC 标记的设备也视为免过滤（安全默认），走 self_no_filter → cn_doh
+-- isNoFilter(dq): 是否为免过滤设备（走 self_no_filter → cn_doh）
+-- 以下情况返回 true：
+--   - 1753 端口（无 tag）
+--   - 携带 EDNS 65001 但 MAC 不在 mac-clean.txt 中
+-- 1853 无 EDNS 时返回 false（标记为 default-clean，视为需过滤）
 function isNoFilter(dq)
   local hex = dq:getTag('mac')
-  if hex == '' then return true end
+  if hex == '' or hex == nil then return true end
+  if hex == 'default-clean' then return false end
   return not g_clean_macs[hex]
 end

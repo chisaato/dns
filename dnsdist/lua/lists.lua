@@ -24,7 +24,7 @@
 function loadDomainList(path)
   local f = io.open(path, 'r')
   if f == nil then
-    warnlog('lists: cannot open ' .. path)
+    warnlog('lists: 无法打开 ' .. path)
     return nil
   end
 
@@ -42,6 +42,6 @@ function loadDomainList(path)
     end
   end
   f:close()
-  infolog('lists: loaded ' .. count .. ' domains from ' .. path)
+  infolog('lists: 从 ' .. path .. ' 加载了 ' .. count .. ' 个域名')
   return node, count
 end

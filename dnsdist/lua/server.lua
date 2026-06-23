@@ -132,7 +132,7 @@ function addUpstream(url, pool, name)
       newServer(params)
     end
 
-    infolog("addUpstream: " .. proto .. "://" .. host .. " → " .. pool .. " (" .. tostring(#ips) .. " IPs)")
+    infolog("addUpstream: " .. proto .. "://" .. host .. " → " .. pool .. " (" .. tostring(#ips) .. " 个 IP)")
     return
   end
 
@@ -187,5 +187,5 @@ function dohServer(domain, pool, port, path, name)
       checkInterval = 30
     })
   end
-  infolog("dohServer: " .. domain .. " → " .. pool .. " (" .. tostring(#ips) .. " IPs)")
+  infolog("dohServer: " .. domain .. " → " .. pool .. " (" .. tostring(#ips) .. " 个 IP)")
 end
