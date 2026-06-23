@@ -129,7 +129,9 @@ function addUpstream(url, pool, name)
         tls = 'openssl',
         subjectName = host,
         pool = pool,
-        -- 健康检测间隔(秒)，设为 0 可临时禁用
+        -- 这个开关可以关闭健康检查
+        setCD = false,
+        -- 健康检测间隔(秒)
         checkInterval = 30,
         -- 使用更常见的域名来解析
         checkName = 'www.baidu.com',
@@ -141,8 +143,8 @@ function addUpstream(url, pool, name)
         rise = 1,
         -- 临时禁用证书验证
         -- validateCertificates = false,
-        keyLogFile = '/etc/dnsdist/dnsdist.keylog',
-        fall = 5
+        -- keyLogFile = '/etc/dnsdist/dnsdist.keylog',
+        maxCheckFailures = 5
       }
 
       if proto == 'https' or proto == 'h3' then

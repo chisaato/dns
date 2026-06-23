@@ -13,32 +13,19 @@
 -- poolHasAvailable(poolName): 检查指定池是否有至少一台可用服务器
 -- 返回 true = 有可用服务器，false = 全部不可用或检查失败
 local function poolHasAvailable(poolName)
-  local ok, pool = pcall(getPool, poolName)
+  local ok, poolServers = pcall(getPoolServers, poolName)
   if not ok then
-    warnlog('健康检查: getPool(' .. poolName .. ') 失败: ' .. tostring(pool))
+    warnlog('健康检查: getPoolServers(' .. poolName .. ') 失败: ' .. tostring(poolServers))
     return false
   end
-  if pool == nil then
+  if poolServers == nil then
     warnlog('健康检查: pool ' .. poolName .. ' 为 nil')
-    return false
-  end
-
-  -- 尝试 getServers()，如果失败则假设 pool 有服务器（因为配置已加载）
-  local ok2, servers = pcall(function() return pool:getServers() end)
-  if not ok2 then
-    -- getServers() 失败，可能是 API 不兼容
-    -- 由于服务器已在启动时成功添加，假设 pool 有可用服务器
-    infolog('健康检查: pool ' .. poolName .. ' getServers() 不可用,假设可用')
-    return true
-  end
-  if servers == nil then
-    warnlog('健康检查: getServers() 返回 nil')
     return false
   end
 
   local total = 0
   local upCount = 0
-  for _, s in ipairs(servers) do
+  for _, s in ipairs(poolServers) do
     total = total + 1
     local ok3, up = pcall(function() return s:isUp() end)
     if ok3 and up then

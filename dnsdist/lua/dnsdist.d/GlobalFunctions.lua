@@ -18,13 +18,16 @@ function addLocal(addr) end
 ---@param acl LuaArray<string>
 function setACL(acl) end
 
----@param url string
+---@param url  string
 ---@param pool string
 function addUpstream(url, pool) end
 
 ---@param name string
 ---@return ServerPool
 function getPool(name) end
+---@param name string
+---@return LuaArray<Server>
+function getPoolServers(name) end
 
 ---@param path string
 function dofile(path) end
@@ -37,40 +40,40 @@ function loadDevices(path) end
 function addServer(params) end
 
 ---@param policy ServerPolicy
----@param pool? string
+---@param pool?  string
 function setServerPolicy(policy, pool) end
 
 ---@return ServerPolicy
 function getServerPolicy() end
 
 ---@param policy ServerPolicy
----@param pool string
+---@param pool   string
 function setPoolServerPolicy(policy, pool) end
 
 ---@param params ServerParams
 ---@return DownstreamState
 function newServer(params) end
 
----@param rule luadnsrule_t
----@param action DNSAction
+---@param rule    luadnsrule_t
+---@param action  DNSAction
 ---@param params? luaruleparams_t
 function addAction(rule, action, params) end
 
----@param rule luadnsrule_t
----@param action DNSResponseAction
+---@param rule    luadnsrule_t
+---@param action  DNSResponseAction
 ---@param params? luaruleparams_t
 function addResponseAction(rule, action, params) end
 
----@param params? {showUUIDs?: boolean, truncateRuleWidth?: integer}
+---@param params? { showUUIDs?: boolean, truncateRuleWidth?: integer }
 function showRules(params) end
 
----@param params? {showUUIDs?: boolean, truncateRuleWidth?: integer}
+---@param params? { showUUIDs?: boolean, truncateRuleWidth?: integer }
 function showResponseRules(params) end
 
----@param ruleID integer|string
+---@param ruleID integer | string
 function rmRule(ruleID) end
 
----@param ruleID integer|string
+---@param ruleID integer | string
 function rmResponseRule(ruleID) end
 
 function mvRuleToTop() end
@@ -98,15 +101,15 @@ function getTopRules(top) end
 function getTopResponseRules(top) end
 
 ---@param num integer
----@return RuleAction|nil
+---@return RuleAction | nil
 function getRule(num) end
 
 ---@param num integer
----@return ResponseRuleAction|nil
+---@return ResponseRuleAction | nil
 function getResponseRule(num) end
 
----@param rule luadnsrule_t
----@param action DNSAction
+---@param rule    luadnsrule_t
+---@param action  DNSAction
 ---@param params? luaruleparams_t
 ---@return RuleAction
 function newRuleAction(rule, action, params) end
@@ -114,8 +117,8 @@ function newRuleAction(rule, action, params) end
 ---@param rules LuaArray<RuleAction>
 function setRules(rules) end
 
----@param rule DNSRule
----@param times? integer
+---@param rule    DNSRule
+---@param times?  integer
 ---@param suffix? string
 function benchRule(rule, times, suffix) end
 
@@ -153,14 +156,14 @@ function getNumWorkers() end
 ---@param params PacketCacheParams
 function newPacketCache(params) end
 
----@param pool string
+---@param pool  string
 ---@param cache PacketCache
 function setPoolCache(pool, cache) end
 
 ---@class PersistentCacheConfig
----@field directory? string           # Cache directory path (empty = disabled)
----@field saveInterval? integer       # Periodic save interval in seconds (0 = shutdown only)
----@field minDirtyEntries? integer    # Minimum dirty entries before saving
+---@field directory?       string  # Cache directory path (empty = disabled)
+---@field saveInterval?    integer # Periodic save interval in seconds (0 = shutdown only)
+---@field minDirtyEntries? integer # Minimum dirty entries before saving
 
 ---@param config? PersistentCacheConfig
 function setPersistentCacheConfig(config) end
@@ -200,12 +203,12 @@ function getDeviceType(dq) end
 ---@return string
 function qtypeStr(qtype) end
 
----@param msg string
+---@param msg  string
 ---@param pool string
 ---@return DNSAction
 function logPoolHit(msg, pool) end
 
----@param msg string
+---@param msg   string
 ---@param rcode integer
 ---@return DNSAction
 function logRcodeHit(msg, rcode) end
@@ -214,13 +217,13 @@ function logRcodeHit(msg, rcode) end
 ---@return DNSAction
 function logSpoofHit(msg) end
 
----@param msg string
+---@param msg       string
 ---@param routeFunc fun(dq: DNSQuestion): string
 ---@return DNSAction
 function logRouteHit(msg, routeFunc) end
 
----@param tag string
----@param data LuaArray<{[1]: string, [2]: any}>
+---@param tag    string
+---@param data   LuaArray<{ [1]: string, [2]: any }>
 ---@param level? string
 function logJson(tag, data, level) end
 
@@ -237,11 +240,11 @@ function routeNoFilterOrFallback(dq) end
 -- ============================================================================
 
 ---@param domain string
----@param urls string|LuaArray<string>
----@return LuaArray<string>|nil
+---@param urls   string | LuaArray<string>
+---@return LuaArray<string> | nil
 function resolveViaDoH(domain, urls) end
 
 ---@param domain string
----@param urls string|LuaArray<string>
----@return string|nil
+---@param urls   string | LuaArray<string>
+---@return string | nil
 function resolveViaDoHFirst(domain, urls) end

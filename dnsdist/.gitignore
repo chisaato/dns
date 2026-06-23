@@ -5,5 +5,8 @@ dnsdist.conf
 lists/*.txt
 lists/*.json
 lists/*.log
+
+# 本地缓存
 cache
+# 调试用 keylog
 dnsdist.keylog
