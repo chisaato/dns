@@ -1,0 +1,142 @@
+-- =============================================================================
+-- dnsdist.conf — 统一 DNS 入口：MAC 感知分流净化
+--
+-- 由 Ansible 模板生成。手动修改会被覆盖。
+--
+-- 监听端口：
+--   {{ dnsdist_listen }} — MAC 感知分流（blocklist + allowlist + 设备分类）
+--   {{ dnsdist_listen_plain | default('0.0.0.0:1753') }} — 纯转发（无过滤，self_no_filter → cn_doh）
+--
+-- 规则链（first-match wins）：
+--   1. MAC 观测 + 剥离 EDNS 65001
+--   2a. [所有设备] 劫持域名 + QTYPE 65 → NXDOMAIN
+--   2b. [所有设备] 劫持域名 → 劫持 DNS
+--   3. [Clean MAC] allowlist 豁免 → self_doh
+--   4. [Clean MAC] blocklist nxdomain → NXDOMAIN
+--   5. [Clean MAC] blocklist zero-ip → 0.0.0.0/::
+--   6. [Clean MAC] 其余 → self_doh（带健康检查托底）
+--   7. [非 Clean MAC] → self_no_filter（带健康检查托底）
+--   8. 兜底 → cn_doh
+--
+-- 上游池（URL 驱动，自动识别协议：https/quic/tls/h3/tcp/udp）：
+--   self_doh        — 自建公网 AdGuard（带过滤）
+--   self_no_filter  — 自建无过滤 DoH
+--   cn_doh          — 国内公共 DoH（托底 + 免过滤回落）
+--   overseas_doh    — CF 隧道反代海外 DoH（托底用）
+--   hijack_N        — 本地劫持（由 dnsdist_custom_forwarding 定义）
+-- =============================================================================
+
+setLocal('{{ dnsdist_listen }}')
+addLocal('{{ dnsdist_listen_plain | default("0.0.0.0:1753") }}')
+setACL({ {% for acl in dnsdist_acl %}'{{ acl }}'{% if not loop.last %}, {% endif %}{% endfor %} })
+
+-- =============================================================================
+-- 共享缓存（降低 TLS 链路延迟影响）
+-- =============================================================================
+
+pc = newPacketCache(100000, { maxTTL = 86400, maxNegativeTTL = 60, staleTTL = 60 })
+
+-- =============================================================================
+-- 加载 addUpstream() — 在此之后才能使用 URL 协议驱动创建服务器
+-- =============================================================================
+
+dofile('/etc/dnsdist/lua/server.lua')
+
+-- =============================================================================
+-- 上游池 — URL 驱动，自动识别协议（https/quic/tls/tcp/udp）
+-- =============================================================================
+
+{# self_doh：自建公网 AdGuard（带过滤） #}
+{% for url in dnsdist_private_servers.self_doh | default([]) %}
+addUpstream('{{ url }}', 'self_doh')
+{% endfor %}
+
+{# self_no_filter：自建无过滤 DoH #}
+{% for url in dnsdist_private_servers.self_no_filter | default([]) %}
+addUpstream('{{ url }}', 'self_no_filter')
+{% endfor %}
+
+{# cn_doh：国内公共 DoH（托底 + 免过滤回落，配缓存） #}
+{% if dnsdist_servers.cn_doh | default([]) | length > 0 %}
+getPool('cn_doh'):setCache(pc)
+{% for url in dnsdist_servers.cn_doh %}
+addUpstream('{{ url }}', 'cn_doh')
+{% endfor %}
+{% endif %}
+
+{# overseas_doh：CF 隧道反代海外 DoH（托底用，配缓存） #}
+{% if dnsdist_private_servers.overseas_doh | default([]) | length > 0 %}
+getPool('overseas_doh'):setCache(pc)
+{% for url in dnsdist_private_servers.overseas_doh %}
+addUpstream('{{ url }}', 'overseas_doh')
+{% endfor %}
+{% endif %}
+
+{# self_doh 也配缓存 #}
+{% if dnsdist_private_servers.self_doh | default([]) | length > 0 %}
+getPool('self_doh'):setCache(pc)
+{% endif %}
+
+-- =============================================================================
+-- 加载 Lua 扩展（MAC 识别、域名列表、路由）
+-- =============================================================================
+
+dofile('/etc/dnsdist/lua/mac.lua')
+dofile('/etc/dnsdist/lua/lists.lua')
+dofile('/etc/dnsdist/lua/routing.lua')
+
+-- 加载 Clean 设备 MAC 列表
+loadDevices()
+
+-- 加载阻断列表
+local blockNxdomain = loadDomainList('/etc/dnsdist/generated/block-nxdomain.txt')
+if blockNxdomain == nil then blockNxdomain = newSuffixMatchNode() end
+
+local blockZeroIp = loadDomainList('/etc/dnsdist/generated/block-zero-ip.txt')
+if blockZeroIp == nil then blockZeroIp = newSuffixMatchNode() end
+
+local allowlistNode = loadDomainList('/etc/dnsdist/generated/allowlist.txt')
+if allowlistNode == nil then allowlistNode = newSuffixMatchNode() end
+
+-- 加载 CN 域名列表（用于托底分裂路由）
+local cnDomains = loadDomainList('/etc/dnsdist/lists/cn.txt')
+if cnDomains == nil then cnDomains = newSuffixMatchNode() end
+
+-- =============================================================================
+-- 本地劫持 — 由 Ansible 变量 dnsdist_custom_forwarding 定义
+-- =============================================================================
+{# build_hijack() 在 routing.lua 中定义，每个条目生成一个劫持组 #}
+{% for fwd in dnsdist_custom_forwarding | default([]) %}
+build_hijack('{{ fwd.name }}', { {% for u in fwd.upstream %}'{{ u }}'{% if not loop.last %}, {% endif %}{% endfor %} }, {{ 'true' if fwd.block_type_https | default(true) else 'false' }})
+{% endfor %}
+
+-- =============================================================================
+-- 规则链（first-match wins）
+-- =============================================================================
+
+-- ── 1. MAC 观测（必须第一条，仅 1853 端口） ──
+addAction(AllRule(), LuaAction(observeMacOption65001), {local = '{{ dnsdist_listen }}'})
+
+-- ────────── Clean MAC 设备（需过滤） ──────────
+
+-- 3. Allowlist 优先：白名单豁免 blocklist，直达 self_doh
+addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(allowlistNode)}, PoolAction('self_doh'))
+
+-- 4. Blocklist — NXDOMAIN
+addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(blockNxdomain)}, RCodeAction(3))
+
+-- 5. Blocklist — Zero-IP（SNI 阻断）
+addAction(AndRule{LuaRule(isClean), SuffixMatchNodeRule(blockZeroIp)}, SpoofAction({'0.0.0.0', '::'}))
+
+-- 6. Clean 设备其余流量 → self_doh（带健康检查托底）
+addAction(LuaRule(isClean), LuaAction(routeSelfDohOrFallback))
+
+-- ────────── 非 Clean MAC 设备（免过滤） ──────────
+
+-- 7. 免过滤设备 → self_no_filter（带健康检查托底）
+addAction(LuaRule(isNoFilter), LuaAction(routeNoFilterOrFallback))
+
+-- ────────── 兜底 ──────────
+
+-- 8. 理论上前面的规则已覆盖所有路径，但保留此兜底防止漏网
+addAction(AllRule(), PoolAction('cn_doh'))

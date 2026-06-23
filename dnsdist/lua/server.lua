@@ -1,0 +1,178 @@
+-- =============================================================================
+-- server.lua — 上游服务器构造器
+--
+-- 提供 dohServer() 和 addUpstream() 两个函数。
+-- dohServer()      — 传统方式，domain + pool + port + path + name
+-- addUpstream()    — URL 驱动，自动识别协议并适配
+--
+-- 通过内建 resolveViaDoHFirst() 将上游域名解析为 IP，
+-- 不依赖系统 DNS（无明文 UDP:53）。
+-- =============================================================================
+
+-- DoH 引导端点：纯 IP DoH，用于解析上游域名
+local BS = {
+  'https://223.5.5.5/dns-query',
+  'https://223.6.6.6/dns-query',
+  'https://1.12.12.12/dns-query',
+  'https://119.29.29.29/dns-query',
+}
+
+-- =============================================================================
+-- addUpstream(url, pool, name) — URL 驱动创建上游服务器
+--
+-- URL 格式：
+--   无协议头 / udp://   → 明文 UDP   默认端口 53
+--   tcp://              → 明文 TCP   默认端口 53
+--   tls://              → DoT        默认端口 853
+--   https://            → DoH        默认端口 443 路径 /dns-query
+--   h3://               → DoH3       默认端口 443 路径 /dns-query
+--   quic://             → DoQ        默认端口 853
+--
+-- pool:  所属池名
+-- name:  可选，服务器标识名（自动从 URL 生成）
+--
+-- 用法：
+--   addUpstream('https://doh.pub/dns-query', 'cn_doh')
+--   addUpstream('quic://seek.zerodream.net:4215', 'self_doh')
+--   addUpstream('192.168.1.1:53', 'hijack')
+-- =============================================================================
+
+-- parseUpstreamUrl(url): 解析上游 URL，返回 proto, host, port, path
+local function parseUpstreamUrl(url)
+  -- 匹配协议头
+  local proto, rest = url:match('^(%w+)://(.+)$')
+
+  if proto == nil then
+    -- 无协议头 → 默认 UDP（兼容 "host:port" 格式）
+    local host, port = url:match('^%[(.+)%]:(%d+)$')
+    if host then return 'udp', host, tonumber(port), nil end
+    host, port = url:match('^([^:]+):(%d+)$')
+    if host then return 'udp', host, tonumber(port), nil end
+    return 'udp', url, 53, nil
+  end
+
+  -- HTTPS / H3：https://host:port/path
+  if proto == 'https' or proto == 'h3' then
+    local host, port, path = rest:match('^([^:/]+):(%d+)(/.*)$')
+    if host then return proto, host, tonumber(port), path end
+    host, path = rest:match('^([^:/]+)(/.*)$')
+    if host then return proto, host, 443, path end
+    host, port = rest:match('^([^:]+):(%d+)$')
+    if host then return proto, host, tonumber(port), '/dns-query' end
+    return proto, rest, 443, '/dns-query'
+  end
+
+  -- QUIC / TLS：quic://host:port  tls://host:port
+  if proto == 'quic' or proto == 'tls' then
+    local host, port = rest:match('^([^:]+):(%d+)$')
+    if host then return proto, host, tonumber(port), nil end
+    return proto, rest, 853, nil
+  end
+
+  -- TCP / UDP：tcp://host:port  udp://host:port
+  if proto == 'tcp' or proto == 'udp' then
+    local host, port = rest:match('^([^:]+):(%d+)$')
+    if host then return proto, host, tonumber(port), nil end
+    return proto, rest, 53, nil
+  end
+
+  warnlog("addUpstream: 未知协议 '" .. proto .. "' — " .. url)
+  return nil, nil, nil, nil
+end
+
+-- addUpstream(url, pool, name): 解析 URL 并创建 dnsdist 上游服务器
+function addUpstream(url, pool, name)
+  local proto, host, port, path = parseUpstreamUrl(url)
+  if host == nil then
+    errlog("addUpstream: 无法解析 '" .. tostring(url) .. "'")
+    return
+  end
+
+  if name == nil then
+    name = (host:gsub('%.', '-')) .. '-' .. proto
+  end
+
+  -- ── 加密协议：解析域名（双栈全量）→ 每个 IP 建一条服务器 ──
+  if proto == 'https' or proto == 'h3' or proto == 'quic' or proto == 'tls' then
+    local ips = resolveViaDoH(host, BS)
+    if ips == nil or #ips == 0 then
+      errlog("addUpstream: 无法解析 '" .. host .. "'")
+      return
+    end
+
+    for idx, ip in ipairs(ips) do
+      local suffix = ip:match(':') and '-6' or '-4'   -- IPv6 后缀 -6, IPv4 后缀 -4
+      local params = {
+        address = ip .. ':' .. port,
+        name = name .. suffix,
+        tls = 'openssl',
+        subjectName = host,
+        pool = pool,
+        checkInterval = 30,
+      }
+
+      if proto == 'https' or proto == 'h3' then
+        params.dohPath = path
+        if proto == 'h3' then
+          params.dohProtocol = 'h3'
+        end
+      elseif proto == 'quic' then
+        params.protocol = 'DoQ'
+      end
+      -- tls: 无需额外参数
+
+      newServer(params)
+    end
+
+    infolog("addUpstream: " .. proto .. "://" .. host .. " → " .. pool .. " (" .. tostring(#ips) .. " IPs)")
+    return
+  end
+
+  -- ── 明文协议：无需域名解析 ──
+  if proto == 'tcp' then
+    newServer({
+      address = host .. ':' .. port,
+      name = name,
+      pool = pool,
+      tcp = true,
+      checkInterval = 10,
+    })
+    infolog("addUpstream: tcp://" .. host .. " → " .. pool)
+    return
+  end
+
+  -- UDP（默认）
+  newServer({
+    address = host .. ':' .. port,
+    name = name,
+    pool = pool,
+    checkInterval = 10,
+  })
+  infolog("addUpstream: " .. host .. " → " .. pool .. " (udp)")
+end
+
+-- =============================================================================
+-- dohServer(domain, pool, port, path, name) — 传统方式创建 DoH 上游
+--
+-- 保留向后兼容，新代码建议用 addUpstream()。
+-- =============================================================================
+function dohServer(domain, pool, port, path, name)
+  local ips = resolveViaDoH(domain, BS)
+  if ips == nil or #ips == 0 then
+    errlog("dohServer: 无法解析 '" .. domain .. "'")
+    return
+  end
+  for idx, ip in ipairs(ips) do
+    local suffix = ip:match(':') and '-6' or '-4'
+    newServer({
+      address = ip .. ':' .. (port or 443),
+      name = (name or domain) .. suffix,
+      tls = 'openssl',
+      subjectName = domain,
+      dohPath = path or '/dns-query',
+      pool = pool,
+      checkInterval = 30,
+    })
+  end
+  infolog("dohServer: " .. domain .. " → " .. pool .. " (" .. tostring(#ips) .. " IPs)")
+end

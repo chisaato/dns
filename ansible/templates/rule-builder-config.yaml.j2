@@ -1,0 +1,20 @@
+# Rule Builder Configuration for dnsdist Phase 2
+# 由 Ansible 从 vars.yml 自动生成，请勿手动编辑
+
+rule_sources:
+{% for f in adguard_filters %}
+  - name: {{ f.name }}
+    url: {{ f.url }}
+    enabled: {{ f.enabled | lower }}
+    action: {{ f.action | default('nxdomain') }}
+{% endfor %}
+
+allowlist_sources:
+{% for f in adguard_whitelist_filters %}
+  - name: {{ f.name }}
+    url: {{ f.url }}
+    enabled: {{ f.enabled | lower }}
+{% endfor %}
+
+mac_remote_url: {{ mac_address_remote_url | default('') }}
+geosite_url: {{ geosite_dat_url | default('') }}

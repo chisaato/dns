@@ -1,54 +1,40 @@
 services:
-  adguard:
+  dnsdist:
     restart: always
-    image: adguard/adguardhome:v0.107.71
-    network_mode: host
-    command: -w /etc/adguard -c /etc/adguard/AdGuardHome.yaml
-    volumes:
-      - ./adguard:/etc/adguard
-
-  mosdns:
-    restart: always
-    image: ghcr.io/chisaato/mosdns-x:latest
-    network_mode: host
-    depends_on:
-      - dnsproxy
-    environment:
-      - MOSDNS_RES=/etc/mosdns
-    entrypoint:
-      - /root/mosdns
-    command:
-      - start
-      - -c
-      - /etc/mosdns/config.yaml
-    volumes:
-      - ./mosdns:/etc/mosdns
-    labels:
-      ofelia.enabled: true
-      ofelia.job-exec.update-mosdns-res.schedule: "@daily"
-      ofelia.job-exec.update-mosdns-res.command: /bin/sh /etc/mosdns/update.sh
-
-  # DNSProxy - 为 MosDNS 提供多协议 bootstrap
-  dnsproxy:
-    tty: true
-    restart: always
-    image: adguard/dnsproxy:latest
+    image: ccr.ccs.tencentyun.com/karasu/stck:dnsdist-2.1.0-rc1
+    build:
+      context: .
+      dockerfile: ./dnsdist-build/Dockerfile
     network_mode: host
     volumes:
-      - ./dnsproxy/config.yaml:/opt/dnsproxy/config.yaml:ro # 只读配置
+      - ./dnsdist:/etc/dnsdist:ro
 
-  # Ofelia - 调度器，运行更新任务
-  ofelia:
-    image: mcuadros/ofelia:latest
+  # Rule Builder - 域名列表生成器
+  rule-builder:
     profiles:
-      - auto-update
-    depends_on:
-      - mosdns
-    restart: always
-    command: daemon --docker -f label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}
+      - rule-builder
+    image: ccr.ccs.tencentyun.com/karasu/stck:rule-builder-latest
+    build:
+      context: .
+      dockerfile: ./rule-builder/Dockerfile
+    restart: "no"
+    network_mode: host
     volumes:
-      # - /var/run/podman/podman.sock:/var/run/docker.sock:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./:/workdir
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    working_dir: /workdir
+    command: ["python3", "rule-builder/rule_builder.py"]
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-run.refresh.schedule: "0 3 * * *"
+      ofelia.job-run.refresh.command: "python3 rule-builder/rule_builder.py"
+
+  # Ofelia - 定时任务调度
+  ofelia:
+    restart: always
+    image: mcuadros/ofelia:latest
+    volumes:
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
 
   # Ansible - 初始化任务，仅在 init profile 运行
   ansible-init:

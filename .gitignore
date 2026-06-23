@@ -3,6 +3,8 @@
 /adguard
 /dnsproxy
 /mosdns
+
+
 # 数据库和日志文件
 *.db
 *.json.*
@@ -18,3 +20,9 @@ ansible/*.retry
 # Ansible 变量
 vars.yml
 .ansible
+# OMO
+.omo/run-continuation
+.omo/rollback
+
+__pycache__
+.env

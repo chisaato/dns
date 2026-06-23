@@ -1,0 +1,7 @@
+# quiche
+Name: quiche
+Description: quiche library
+URL: https://github.com/cloudflare/quiche
+Version: 0.29.1
+Cflags: -I/usr/include
+Libs: -L/usr/lib/x86_64-linux-gnu -ldnsdist-quiche

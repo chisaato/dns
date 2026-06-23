@@ -1,0 +1,7 @@
+# dnsdist 配置（由 Ansible 模板渲染生成）
+dnsdist.conf
+
+# dnsdist 规则生成产物（保留 .gitkeep）
+lists/*.txt
+lists/*.json
+lists/*.log
