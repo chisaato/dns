@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
 # ============================================================================
 # 幂等性资源更新脚本（借鉴 rule-builder staging 策略）
@@ -11,9 +11,7 @@ set -euo pipefail
 # ============================================================================
 
 # ── 路径 ────────────────────────────────────────────────────────────────────
-if [ -z "$MOSDNS_RES" ]; then
-    MOSDNS_RES="$(cd "$(dirname "$0")" && pwd)"
-fi
+MOSDNS_RES="${MOSDNS_RES:-"$(cd "$(dirname "$0")" && pwd)"}"
 
 STAGING_DIR="$MOSDNS_RES/.update-staging.$$"
 LOCKDIR="$MOSDNS_RES/.update.lock"
@@ -28,9 +26,9 @@ trap 'echo "[update] 清理..."; rm -rf "$STAGING_DIR" "$LOCKDIR"' EXIT
 # ── 网络检测 ────────────────────────────────────────────────────────────────
 echo "[update] 检查网络连通性..."
 network_ok=false
-for ep in "https://1.12.12.12/dns-query" \
-          "https://120.53.53.53/dns-query" \
-          "https://223.5.5.5/dns-query"; do
+for ep in "https://www.baidu.com" \
+          "https://www.qq.com" \
+          "http://connect.rom.miui.com/generate_204"; do
     if curl -sSf --connect-timeout 5 --max-time 10 "$ep" > /dev/null 2>&1; then
         network_ok=true
         break
@@ -73,7 +71,7 @@ download_with_retry() {
     local max_retries=5
 
     for i in $(seq 1 "$max_retries"); do
-        if curl -L -f -sS --connect-timeout 15 --retry 2 -o "$dest" "$url"; then
+        if curl -L -f --connect-timeout 15 --retry 2 -o "$dest" "$url"; then
             local actual_size
             actual_size=$(stat -c%s "$dest" 2>/dev/null || stat -f%z "$dest" 2>/dev/null)
             if [ "$actual_size" -ge "$min_size" ]; then
