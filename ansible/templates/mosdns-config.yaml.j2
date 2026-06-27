@@ -1,5 +1,5 @@
 log:
-  level: info
+  level: debug
 
 data_providers:
   - tag: mac_addrs_remote
@@ -36,6 +36,7 @@ plugins:
       hosts:
         - "provider:hosts"
 
+  # HTTPS 查询类型匹配（用于自定义转发中的拦截）
   - tag: match_type_https
     type: query_matcher
     args:
@@ -61,40 +62,48 @@ plugins:
   - tag: adg_filter
     type: adg_filter
     args:
+{% if adguard_filters is defined and adguard_filters %}
       block_lists:
-{% for f in adguard_filters if f.enabled %}
-        - url: "{{ f.url }}"
+{% for f in adguard_filters %}
+        - enabled: {{ f.enabled | lower }}
+          url: "{{ f.url }}"
           name: "{{ f.name }}"
+          id: {{ f.id }}
 {% endfor %}
+{% endif %}
+{% if adguard_whitelist_filters is defined and adguard_whitelist_filters %}
       allow_lists:
-{% for f in adguard_whitelist_filters if f.enabled %}
-        - url: "{{ f.url }}"
+{% for f in adguard_whitelist_filters %}
+        - enabled: {{ f.enabled | lower }}
+          url: "{{ f.url }}"
           name: "{{ f.name }}"
+          id: {{ f.id }}
 {% endfor %}
+{% endif %}
       block_mode: nxdomain
       update_interval: 3600
+      # 本地缓存
       cache_dir: "/etc/mosdns/adg_cache"
 
   # ── LRU 缓存（字节限制 LRU，两个路径共享） ──
+  # 过净路径 adg_filter 先拦截，被 ban 的域名进不了缓存
   - tag: adg_cache
     type: adg_cache
     args:
-      size: 52428800
-      optimistic: true
-      optimistic_ttl: 60
-      prefetch: true
-      prefetch_ttl: 30
-      stale_ttl: 600
+      size: 52428800 # 50 MB
+      optimistic: true # 上游不可达时继续返回过期结果
+      optimistic_ttl: 60 # 过期结果的有效 TTL（秒）
+      prefetch: true # 过期前预刷新热门域名
+      prefetch_ttl: 30 # 过期前 30 秒触发刷新
+      stale_ttl: 600 # 过期结果最多保留 10 分钟
 
   # ── EDNS 选项过滤（转发前抹掉 65001 MAC 标记 和 ECS） ──
   - tag: strip_edns
     type: edns0_filter
     args:
       discard:
-        - 65001
-        - 8
-
-  # ── 上游转发 ──
+        - 65001 # dnsmasq 附加的请求者 MAC
+        - 8 # EDNS Client Subnet
 
   # 自建非过滤转发
   - tag: forward_self_no_filter
@@ -127,6 +136,8 @@ plugins:
       timeout: 10
 
   # 海外转发
+  # 在直接请求自建洁净转发失败以后用,相当于自己主动请求这几个
+  # 起到简单模拟海外洁净过滤转发的效果
   - tag: forward_oversea
     type: adg_forward
     args:
@@ -141,7 +152,7 @@ plugins:
 {% endfor %}
       timeout: 10
 
-  # 国内普通转发（兜底）
+  # 国内普通转发,给普通用户用,也用作兜底
   - tag: forward_cn_normal
     type: adg_forward
     args:
@@ -182,7 +193,8 @@ plugins:
 {% endfor %}
 {% endif %}
 
-  # ── 非过滤兜底（非净化 MAC 走这个链路，抹掉 EDNS 再发往上游） ──
+  # 先尝试非过滤,再走国内 DoH
+  # 给所有无须过滤的场景用
   - tag: no_filter_with_cn_fallback
     type: sequence
     args:
@@ -198,7 +210,8 @@ plugins:
           fast_fallback: 1000
           always_standby: false
 
-  # ── 主序列 ──
+  # 主序列
+  # 无 ECS 视为本机请求,一律过滤,因为是自用为主,所以这里是过滤为主
   - tag: default_sequence
     type: sequence
     args:
@@ -222,8 +235,8 @@ plugins:
 {% endfor %}
 {% endif %}
 
-        # 有 EDNS + 但是不匹配 MAC 地址
-        - if: "_query_edns0 && !match_clean_macs"
+        # 有 MAC 地址但不在过滤名单 → 家庭成员，直出
+        - if: "[_has_mac_addr] && !match_clean_macs"
           exec:
             # 无须过滤的
             - adg_cache
@@ -241,38 +254,34 @@ plugins:
           secondary:
             # 但是如果公网的纯净解析炸了,那我们就分流自己处理
             # 模拟一个简单的公网自建服务器逻辑
-            - if: (match_cn_domains)
+            - if: match_cn_domains
               exec:
                 - "adg_cache"
+                # 这里没有考虑自建的必要,因为假设自建已经爆了
                 - "forward_cn_normal"
                 - _return
             # 剩下的就是请求海外了
             - "adg_cache"
             - "forward_oversea"
             - _return
+          # 统计最近 10 次请求,失败超过 5 次则切换为自主请求 DoH
           stat_length: 10
           threshold: 5
+          # 或者 5000 ms 后没有结果
           fast_fallback: 5000
           always_standby: false
 
-  # ── 应急/非过滤监听器（:1753，不过滤，全部走直出） ──
+  # ── 应急监听器（:1753，不过滤，直接走直出） ──
   - tag: unfilter_sequence
     type: sequence
     args:
       exec:
         - hosts
         - adg_cache
-        - primary:
-            - forward_self_no_filter
-            - _return
-          secondary:
-            - forward_cn_normal
-          stat_length: 10
-          threshold: 5
-          fast_fallback: 1000
-          always_standby: false
+        - no_filter_with_cn_fallback
 
 servers:
+  # 默认序列,带 MAC 地址分流
   - exec: default_sequence
     timeout: 10
     listeners:
@@ -280,6 +289,7 @@ servers:
         addr: ":{{ mosdns_default_listen }}"
       - protocol: tcp
         addr: ":{{ mosdns_default_listen }}"
+  # 非过滤序列,给其他人用或者应急用
   - exec: unfilter_sequence
     timeout: 5
     listeners:

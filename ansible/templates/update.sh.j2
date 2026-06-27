@@ -1,71 +1,133 @@
 #!/bin/bash
+set -euo pipefail
 
-# 判断MOSDNS_RES变量是否存在，不存在则设定为脚本自身所在的目录
+# ============================================================================
+# 幂等性资源更新脚本（借鉴 rule-builder staging 策略）
+#   1. 网络检测 — 先确认可达，网络不通则跳过（不视为失败）
+#   2. Staging — 全部下载到临时目录
+#   3. 验证 — 大小/完整性检查
+#   4. 原子提交 — 全部成功后才替换实际文件
+#   5. 失败回滚 — 任何一步失败则清理 staging，不碰任何现有文件
+# ============================================================================
+
+# ── 路径 ────────────────────────────────────────────────────────────────────
 if [ -z "$MOSDNS_RES" ]; then
     MOSDNS_RES="$(cd "$(dirname "$0")" && pwd)"
-    echo "MOSDNS_RES变量不存在，已设定为脚本所在目录: $MOSDNS_RES"
-else
-    echo "MOSDNS_RES变量已存在: $MOSDNS_RES"
 fi
 
-# 下载并验证函数
-# $1: URL
-# $2: 目标路径
-# $3: 最小文件大小 (bytes, 默认为 1024)
-download_file() {
-    local url="$1"
-    local target="$2"
-    local min_size="${3:-1024}"
-    local tmp_file="${target}.tmp"
-    local max_retries=5
-    local success=0
+STAGING_DIR="$MOSDNS_RES/.update-staging.$$"
+LOCKDIR="$MOSDNS_RES/.update.lock"
 
-    echo "正在尝试下载: $url"
+# ── 并发锁（mkdir 是原子操作，POSIX 兼容） ────────────────────────────────
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    echo "[update] 已有更新进程在运行，跳过"
+    exit 0
+fi
+trap 'echo "[update] 清理..."; rm -rf "$STAGING_DIR" "$LOCKDIR"' EXIT
 
-    for i in $(seq 1 $max_retries); do
-        # -L: 跟踪重定向
-        # -f: HTTP 错误时失败 (不返回错误页面的 HTML)
-        # -sS: 静默模式，但显示错误
-        # --connect-timeout: 连接超时 15s
-        # --retry: curl 内部重试 2 次
-        if curl -L -f -sS --connect-timeout 15 --retry 2 -o "$tmp_file" "$url"; then
-            if [ -f "$tmp_file" ]; then
-                local actual_size=$(stat -c%s "$tmp_file" 2>/dev/null || stat -f%z "$tmp_file" 2>/dev/null)
-                if [ "$actual_size" -ge "$min_size" ]; then
-                    mv "$tmp_file" "$target"
-                    echo "成功下载并更新: $target ($actual_size 字节)"
-                    success=1
-                    break
-                else
-                    echo "警告: 下载的文件大小不足 ($actual_size < $min_size 字节)，文件可能已损坏或仓库正在更新。"
-                fi
-            fi
-        else
-            echo "错误: 第 $i 次尝试下载失败 (curl exit code: $?)"
-        fi
-        
-        # 失败处理
-        [ -f "$tmp_file" ] && rm -f "$tmp_file"
-        
-        if [ $i -lt $max_retries ]; then
-            local delay=5
-            echo "将在 ${delay}秒 后进行第 $((i+1)) 次重试..."
-            sleep $delay
-        fi
-    done
-
-    if [ $success -ne 1 ]; then
-        echo "严重错误: 无法下载 $url，已达到最大重试次数 ($max_retries)。"
-        echo "将保持旧文件 $target 不动。"
-        return 1
+# ── 网络检测 ────────────────────────────────────────────────────────────────
+echo "[update] 检查网络连通性..."
+network_ok=false
+for ep in "https://1.12.12.12/dns-query" \
+          "https://120.53.53.53/dns-query" \
+          "https://223.5.5.5/dns-query"; do
+    if curl -sSf --connect-timeout 5 --max-time 10 "$ep" > /dev/null 2>&1; then
+        network_ok=true
+        break
     fi
-    return 0
-}
+done
+if [ "$network_ok" = false ]; then
+    echo "[update] 网络不可用，跳过更新（现有文件保持不变）"
+    exit 0
+fi
+echo "[update] 网络正常"
+
+# ── Staging ──────────────────────────────────────────────────────────────────
+echo "[update] 创建 staging 目录: $STAGING_DIR"
+mkdir -p "$STAGING_DIR"
+
+# 用平行数组定义需要更新的文件
+STAGE_NAMES=()
+STAGE_TARGETS=()
+STAGE_MIN_SIZES=()
+STAGE_LABELS=()
+STAGE_URLS=()
 
 {% if mac_address_remote_url != "" %}
-# 下载 mac-address-remote.txt (预期最小 100 字节)
-download_file "{{ mac_address_remote_url }}" "$MOSDNS_RES/mac-address-remote.txt" 100
+STAGE_NAMES+=("mac-address-remote.txt")
+STAGE_TARGETS+=("$MOSDNS_RES/mac-address-remote.txt")
+STAGE_MIN_SIZES+=(100)
+STAGE_LABELS+=("mac-remote")
+STAGE_URLS+=("{{ mac_address_remote_url }}")
 {% endif %}
 
-# 下载 geosite.dat (预期最小 1MB)
-download_file "{{ geosite_dat_url }}" "$MOSDNS_RES/geosite.dat" 1048576
+STAGE_NAMES+=("geosite.dat")
+STAGE_TARGETS+=("$MOSDNS_RES/geosite.dat")
+STAGE_MIN_SIZES+=(1048576)
+STAGE_LABELS+=("geosite.dat")
+STAGE_URLS+=("{{ geosite_dat_url }}")
+
+# ── 下载函数 ────────────────────────────────────────────────────────────────
+download_with_retry() {
+    local url="$1" dest="$2" min_size="$3" label="$4"
+    local max_retries=5
+
+    for i in $(seq 1 "$max_retries"); do
+        if curl -L -f -sS --connect-timeout 15 --retry 2 -o "$dest" "$url"; then
+            local actual_size
+            actual_size=$(stat -c%s "$dest" 2>/dev/null || stat -f%z "$dest" 2>/dev/null)
+            if [ "$actual_size" -ge "$min_size" ]; then
+                echo "  ✓ $label ($actual_size 字节)"
+                return 0
+            else
+                echo "  ⚠ $label 大小不足 ($actual_size < $min_size 字节)"
+            fi
+        else
+            echo "  ⚠ $label 第 $i 次尝试失败"
+        fi
+        [ -f "$dest" ] && rm -f "$dest"
+        sleep 5
+    done
+
+    echo "  ✗ $label 下载失败（已达最大重试次数）"
+    return 1
+}
+
+# ── 下载所有文件到 staging ──────────────────────────────────────────────────
+ALL_OK=true
+for i in "${!STAGE_NAMES[@]}"; do
+    name="${STAGE_NAMES[$i]}"
+    target="${STAGE_TARGETS[$i]}"
+    min_size="${STAGE_MIN_SIZES[$i]}"
+    label="${STAGE_LABELS[$i]}"
+    url="${STAGE_URLS[$i]}"
+
+    echo "[update] 下载 $label ..."
+    if ! download_with_retry "$url" "$STAGING_DIR/$name" "$min_size" "$label"; then
+        ALL_OK=false
+    fi
+done
+
+# ── 检查是否全部成功 ────────────────────────────────────────────────────────
+if [ "$ALL_OK" = false ]; then
+    echo "[update] 下载阶段失败，清理 staging，现有文件保持不变"
+    exit 1
+fi
+
+# ── 原子提交 ────────────────────────────────────────────────────────────────
+echo "[update] 全部下载成功，原子替换文件..."
+for i in "${!STAGE_NAMES[@]}"; do
+    name="${STAGE_NAMES[$i]}"
+    target="${STAGE_TARGETS[$i]}"
+    staged="$STAGING_DIR/$name"
+
+    # 保留一份备份（仅最新，供回滚参考）
+    if [ -f "$target" ]; then
+        cp "$target" "${target}.bak"
+    fi
+
+    mv "$staged" "$target"
+    echo "  → $target"
+done
+
+echo "[update] 更新完成！"

@@ -3,6 +3,8 @@
 bootstrap_dns:
   - https://1.12.12.12/dns-query
   - https://120.53.53.53/dns-query
+  - https://223.5.5.5/dns-query
+  - https://223.6.6.6/dns-query
 
 # mosdns 监听端口
 mosdns_default_listen: 1853
@@ -10,7 +12,7 @@ mosdns_clean_listen: 1753
 
 # 自建非过滤转发（非净化 MAC / 应急链路走这个）
 mosdns_self_no_filter_upstream:
-  - https://example.com:443/dns-query/no-filter
+  - https://example.com:443/dns-query
 
 # 自建洁净过滤转发（净化设备的国内域名走这个）
 mosdns_self_clean_upstream:
@@ -34,10 +36,6 @@ adguard_filters:
     url: https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
     name: "AdGuard DNS filter"
     id: 1
-  - enabled: true
-    url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.plus.txt
-    name: "HaGeZi Pro++"
-    id: 2
 adguard_whitelist_filters: []
 
 # 远程文件下载源
