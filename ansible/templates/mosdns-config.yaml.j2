@@ -1,20 +1,16 @@
 log:
-  file: ""
-  level: debug
+  level: info
+
 data_providers:
-  # 加载远程的设备 mac 地址列表
   - tag: mac_addrs_remote
     file: /etc/mosdns/mac-address-remote.txt
     auto_reload: true
-  # 本地配置
   - tag: mac_addrs_local
     file: /etc/mosdns/mac-address-local.txt
     auto_reload: true
-  # hosts
   - tag: hosts
     file: /etc/mosdns/hosts
     auto_reload: true
-  # hosts
   - tag: geosite
     file: /etc/mosdns/geosite.dat
     auto_reload: true
@@ -24,7 +20,6 @@ data_providers:
 {% for domain in item.domains %}
 {% if domain.startswith('provider:') %}
 {% set provider_tag = domain.split(':')[1] %}
-  # 自定义转发匹配域名: {{ item.name }}
   - tag: {{ provider_tag }}
     file: /etc/mosdns/{{ provider_tag | replace('_', '-') }}.txt
     auto_reload: true
@@ -32,210 +27,263 @@ data_providers:
 {% endfor %}
 {% endfor %}
 {% endif %}
+
 plugins:
-  # hosts 插件,至少准备一个
-  - tag: "hosts"
-    type: "hosts"
+  # ── 基础插件 ──
+  - tag: hosts
+    type: hosts
     args:
       hosts:
         - "provider:hosts"
-  # 缓存插件
-  - tag: "cache"
-    type: "cache"
-    args:
-      size: {{ mosdns_cache_size }}
-      compress_resp: false
-      lazy_cache_ttl: 60
-      lazy_cache_reply_ttl: 5
-      cache_everything: true
-  # 匹配 HTTPS 类型
-  - tag: "match_type_https"
-    type: "query_matcher"
+
+  - tag: match_type_https
+    type: query_matcher
     args:
       qtype:
         - 65
-  # 匹配要进行纯净 DNS 的 mac 地址列表
-  - tag: "match_clean_macs"
-    type: "query_matcher"
+
+  # ── MAC 地址匹配 ──
+  - tag: match_clean_macs
+    type: mac_matcher
     args:
       mac_address:
-        - provider:mac_addrs_remote
-        - provider:mac_addrs_local
+        - "provider:mac_addrs_remote"
+        - "provider:mac_addrs_local"
 
-  # 匹配国内加速域名
-  - tag: "match_cn_domains"
-    type: "query_matcher"
+  # ── 域名匹配（geosite） ──
+  - tag: match_cn_domains
+    type: query_matcher
     args:
       domain:
-        - provider:geosite:cn
+        - "provider:geosite:cn"
 
-  # 国内普通转发
-  - tag: forward_cn_normal
-    type: fast_forward
+  # ── AdGuard 过滤引擎 ──
+  - tag: adg_filter
+    type: adg_filter
     args:
-      upstream:
-{% for upstream_url in mosdns_cn_normal_upstream %}
-        - addr: {{ upstream_url | to_yaml }}
-          bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
+      block_lists:
+{% for f in adguard_filters if f.enabled %}
+        - url: "{{ f.url }}"
+          name: "{{ f.name }}"
 {% endfor %}
+      allow_lists:
+{% for f in adguard_whitelist_filters if f.enabled %}
+        - url: "{{ f.url }}"
+          name: "{{ f.name }}"
+{% endfor %}
+      block_mode: nxdomain
+      update_interval: 3600
+      cache_dir: "/etc/mosdns/adg_cache"
 
-  # 国外转发
-  - tag: forward_oversea
-    type: fast_forward
+  # ── LRU 缓存（字节限制 LRU，两个路径共享） ──
+  - tag: adg_cache
+    type: adg_cache
     args:
-      upstream:
-{% for upstream_url in mosdns_oversea_upstream %}
-        - addr: {{ upstream_url | to_yaml }}
-          bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
-{% endfor %}
+      size: 52428800
+      optimistic: true
+      optimistic_ttl: 60
+      prefetch: true
+      prefetch_ttl: 30
+      stale_ttl: 600
 
-  # 自建洁净转发
-  - tag: forward_self_clean
-    type: fast_forward
+  # ── EDNS 选项过滤（转发前抹掉 65001 MAC 标记 和 ECS） ──
+  - tag: strip_edns
+    type: edns0_filter
     args:
-      upstream:
-{% for upstream_url in mosdns_self_clean_upstream %}
-        - addr: {{ upstream_url | to_yaml }}
-          bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
-{% endfor %}
+      discard:
+        - 65001
+        - 8
+
+  # ── 上游转发 ──
 
   # 自建非过滤转发
   - tag: forward_self_no_filter
-    type: fast_forward
+    type: adg_forward
     args:
-      upstream:
-{% for upstream_url in mosdns_self_no_filter_upstream %}
-        - addr: {{ upstream_url | to_yaml }}
-          bootstrap: "127.0.0.1:{{ dnsproxy_port }}"
+      mode: load_balance
+      bootstrap:
+{% for d in bootstrap_dns %}
+        - "{{ d }}"
 {% endfor %}
-
-  # 本地 AdGuard 转发
-  - tag: forward_adguard
-    type: fast_forward
-    args:
       upstream:
-        - addr: udp://127.0.0.1:{{ adguard_dns_port }}
-        - addr: tcp://127.0.0.1:{{ adguard_dns_port }}
+{% for u in mosdns_self_no_filter_upstream %}
+        - addr: "{{ u }}"
+{% endfor %}
+      timeout: 10
+
+  # 自建洁净过滤转发
+  - tag: forward_self_clean
+    type: adg_forward
+    args:
+      mode: load_balance
+      bootstrap:
+{% for d in bootstrap_dns %}
+        - "{{ d }}"
+{% endfor %}
+      upstream:
+{% for u in mosdns_self_clean_upstream %}
+        - addr: "{{ u }}"
+{% endfor %}
+      timeout: 10
+
+  # 海外转发
+  - tag: forward_oversea
+    type: adg_forward
+    args:
+      mode: load_balance
+      bootstrap:
+{% for d in bootstrap_dns %}
+        - "{{ d }}"
+{% endfor %}
+      upstream:
+{% for u in mosdns_oversea_upstream %}
+        - addr: "{{ u }}"
+{% endfor %}
+      timeout: 10
+
+  # 国内普通转发（兜底）
+  - tag: forward_cn_normal
+    type: adg_forward
+    args:
+      mode: load_balance
+      bootstrap:
+{% for d in bootstrap_dns %}
+        - "{{ d }}"
+{% endfor %}
+      upstream:
+{% for u in mosdns_cn_normal_upstream %}
+        - addr: "{{ u }}"
+{% endfor %}
+      timeout: 10
 
 {% if mosdns_custom_forwarding is defined %}
 {% for item in mosdns_custom_forwarding %}
-  # 匹配自定义转发: {{ item.name }}
   - tag: "match_custom_{{ item.name }}"
-    type: "query_matcher"
+    type: query_matcher
     args:
       domain:
 {% for domain in item.domains %}
         - "{{ domain }}"
 {% endfor %}
 
-  # 执行自定义转发: {{ item.name }}
   - tag: "forward_custom_{{ item.name }}"
-    type: "fast_forward"
+    type: adg_forward
     args:
+      mode: load_balance
+      bootstrap:
+{% for d in bootstrap_dns %}
+        - "{{ d }}"
+{% endfor %}
       upstream:
 {% for up in item.upstream %}
         - addr: "{{ up }}"
 {% endfor %}
+      timeout: {{ item.timeout | default(10) }}
 {% endfor %}
 {% endif %}
-  # 带失败回滚的国内非净化转发
-  - tag: forward_no_filter
+
+  # ── 非过滤兜底（非净化 MAC 走这个链路，抹掉 EDNS 再发往上游） ──
+  - tag: no_filter_with_cn_fallback
     type: sequence
     args:
       exec:
+        - strip_edns
         - primary:
-            # 优先请求自建
-            - "forward_self_no_filter"
+            - forward_self_no_filter
           secondary:
-            # 如果自建爆了,则自己去请求国内公共加密 DNS
-            - "forward_cn_normal"
+            - forward_cn_normal
             - _return
-          # 统计最近 10 次请求,失败超过 5 次则切换为自主请求 DoH
           stat_length: 10
           threshold: 5
-          # 或者 1000 ms 后没有结果
           fast_fallback: 1000
           always_standby: false
 
-  # 默认序列,流量就应该扔进这里
+  # ── 主序列 ──
   - tag: default_sequence
     type: sequence
     args:
       exec:
         - hosts
+
 {% if mosdns_custom_forwarding is defined %}
 {% for item in mosdns_custom_forwarding %}
-        # 匹配并执行自定义转发 {{ item.name }}
         - if: "match_custom_{{ item.name }}"
           exec:
-            # 在这里实现对自定义转发的 HTTPS 请求进行拦截
 {% if item.block_type_https | default(false) %}
             - if: "match_type_https"
               exec:
                 - _new_empty_response
-                - "_return"
+                - _return
 {% endif %}
-            - forward_custom_{{ item.name }}
-            - if: "[_response_valid_answer]"
+            - "forward_custom_{{ item.name }}"
+            - if: "_response_valid_answer"
               exec:
-                - "_return"
+                - _return
 {% endfor %}
 {% endif %}
-        # 如果没有 edns0 当作本机请求,此时走净化模式
-        # 必须携带 ECS 且 ECS 中含有 mac 地址才走国内服务器
-        - if: "([_query_edns0] && !match_clean_macs)"
+
+        # 有 EDNS + 但是不匹配 MAC 地址
+        - if: "_query_edns0 && !match_clean_macs"
           exec:
-            # 这里无须净化,直接去查询国内服务器
-            - "cache"
-            - "forward_no_filter"
+            # 无须过滤的
+            - adg_cache
+            # 此处含兜底逻辑
+            - no_filter_with_cn_fallback
             - _return
-        # 直接发往本地 AdGuard
-        - forward_adguard
-  # 在 AdGuard 过滤之后,在此处分流
-  - tag: clean_sequence
-    type: sequence
-    args:
-      exec:
-        # 走一次,反正开销不大
-        - hosts
-        - "cache"
+        # 然后就是自己的设备走过滤
+        - adg_filter
+        - adg_cache
+        - strip_edns
+        # 这里要做一个比较复杂的回滚
         - primary:
-            # 作为 AdGuard 上游肯定是考虑先走自建
+            # 先发给自己的服务器,相当于默认都是这个
             - "forward_self_clean"
           secondary:
-            # 如果国内的主服务器爆了则在这里实现一套简单的洁净分流
+            # 但是如果公网的纯净解析炸了,那我们就分流自己处理
+            # 模拟一个简单的公网自建服务器逻辑
             - if: (match_cn_domains)
               exec:
-                - "cache"
-                # 这里没有考虑自建的必要,因为假设自建已经爆了
+                - "adg_cache"
                 - "forward_cn_normal"
                 - _return
             # 剩下的就是请求海外了
-            - "cache"
+            - "adg_cache"
             - "forward_oversea"
             - _return
-          # 统计最近 10 次请求,失败超过 5 次则切换为自主请求 DoH
           stat_length: 10
           threshold: 5
-          # 或者 1000 ms 后没有结果
+          fast_fallback: 5000
+          always_standby: false
+
+  # ── 应急/非过滤监听器（:1753，不过滤，全部走直出） ──
+  - tag: unfilter_sequence
+    type: sequence
+    args:
+      exec:
+        - hosts
+        - adg_cache
+        - primary:
+            - forward_self_no_filter
+            - _return
+          secondary:
+            - forward_cn_normal
+          stat_length: 10
+          threshold: 5
           fast_fallback: 1000
           always_standby: false
+
 servers:
-  # 默认序列
-  # 请把下游设定到这个端口来
   - exec: default_sequence
-    timeout: 5
+    timeout: 10
     listeners:
       - protocol: udp
         addr: ":{{ mosdns_default_listen }}"
       - protocol: tcp
         addr: ":{{ mosdns_default_listen }}"
-  # 作为 AdGuard 上游的序列
-  # 远程服务器直接把 AdGuard 转移到这里就行,上一个就不要了
-  - exec: clean_sequence
+  - exec: unfilter_sequence
     timeout: 5
     listeners:
       - protocol: udp
-        addr: ":{{ mosdns_clean_listen }}"
+        addr: ":{{ mosdns_clean_listen | default(1753) }}"
       - protocol: tcp
-        addr: ":{{ mosdns_clean_listen }}"
+        addr: ":{{ mosdns_clean_listen | default(1753) }}"
