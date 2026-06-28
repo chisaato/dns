@@ -210,12 +210,19 @@ plugins:
           fast_fallback: 1000
           always_standby: false
 
+  # ── 可观测性 ──
+  - tag: observability
+    type: observability
+    args:
+      prometheus_listen: "{{ mosdns_observability_listen }}"
+
   # 主序列
   # 无 ECS 视为本机请求,一律过滤,因为是自用为主,所以这里是过滤为主
   - tag: default_sequence
     type: sequence
     args:
       exec:
+        - observability
         - hosts
 
 {% if mosdns_custom_forwarding is defined %}
